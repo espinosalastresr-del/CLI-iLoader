@@ -34,7 +34,7 @@ jobs:
       - name: Debug Git
         run: |
           git --version
-          git ls-remote https://github.com/espinosalastres-del/isideload.git
+          git ls-remote https://github.com/espinosalastresr-del/isideload.git
 
       - name: Cargo Metadata
         run: cargo metadata --format-version=1
