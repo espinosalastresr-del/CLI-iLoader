@@ -1,46 +1,24 @@
-name: Rust CI (Alpine compatible build)
+name: Build Rust (Alpine musl)
 
 on:
   push:
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        target:
-          - x86_64-unknown-linux-musl
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install cross
+      - name: Install Cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Fix Docker permissions
+      - name: Build Cross Image
         run: |
-          sudo systemctl start docker
-          docker version
+          docker build -t cross-custom:latest -f .cross/Dockerfile .
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo
-            target
-          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build (cross musl)
-        env:
-          PKG_CONFIG_ALLOW_CROSS: 1
-          RUST_BACKTRACE: full
+      - name: Build project
         run: |
-          cross build --release --target ${{ matrix.target }}
+          cross build --release --target x86_64-unknown-linux-musl
