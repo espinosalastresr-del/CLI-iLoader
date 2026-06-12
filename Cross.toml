@@ -1,5 +1,4 @@
-# Cross.toml — configuración para compilación cruzada con cross-rs
-# Compila para Alpine Linux (musl libc) desde cualquier runner
+# Cross.toml — configuración para cross-rs (fix dbus + musl)
 
 [build.env]
 passthrough = [
@@ -7,10 +6,17 @@ passthrough = [
     "RUST_LOG",
 ]
 
-# Imagen base para el target musl — incluye las dependencias C necesarias
 [target.x86_64-unknown-linux-musl]
 image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:edge"
 
-# Si necesitas compilar en ARM (Raspberry Pi, etc.)
+# 🔧 FIX: instalar pkg-config + dbus dentro del container
+pre-build = [
+    "apk add --no-cache pkgconf dbus-dev"
+]
+
 [target.aarch64-unknown-linux-musl]
 image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:edge"
+
+pre-build = [
+    "apk add --no-cache pkgconf dbus-dev"
+]
