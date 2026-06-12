@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Backend principal
-isideload = { git = "https://github.com/espinosalastres-del/isideload.git", branch = "main" }
+isideload = { git = "https://github.com/espinosalastresr-del/isideload.git", branch = "main" }
 
 # Mantener la misma versión que usa isideload
 idevice = "0.1.61"
