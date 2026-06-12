@@ -8,45 +8,37 @@ name = "iloader"
 path = "src/main.rs"
 
 [dependencies]
-# Core sideloading — misma librería que usa el backend de iloader
-isideload = { git = "https://github.com/espinosalastres-del/isideload", branch = "main" }
-idevice    = { git = "https://github.com/jkcoxson/idevice", branch = "master" }
+# Backend principal
+isideload = { git = "https://github.com/espinosalastres-del/isideload.git", branch = "main" }
+
+# Mantener la misma versión que usa isideload
+idevice = "0.1.61"
 
 # CLI
-clap       = { version = "4", features = ["derive", "env"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 
-# Async runtime
-tokio      = { version = "1", features = ["full"] }
-futures    = "0.3"
+# Async
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
 
-# HTTP (para descargar IPAs)
-reqwest    = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+# HTTP
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 
 # Serialización
-serde      = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-plist      = "1"
-
-# Crypto (requerido por isideload/rustls)
-rustls     = { version = "0.23", features = ["aws-lc-rs"] }
-
-# Errores
-thiserror  = "1"
-rootcause  = "0.1"
+plist = "1"
 
 # Logging
-tracing            = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
-# Storage de credenciales — igual que el backend pero con fallback a fs
-keyring    = { version = "3", features = ["linux-secret-service-rt-tokio-crypto-openssl"] }
-
-# plist utils (igual que en pairing.rs)
-plist-macro = { git = "https://github.com/iloaderapp/plist-macro", branch = "main" }
+# Errores
+thiserror = "2"
 
 [profile.release]
-opt-level  = "z"     # Minimizar tamaño del binario
-lto        = true
+opt-level = "z"
+lto = true
 codegen-units = 1
-strip      = true
-panic      = "abort"
+strip = true
+panic = "abort"
