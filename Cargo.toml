@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core sideloading — misma librería que usa el backend de iloader
-isideload = { git = "https://github.com/iloaderapp/isideload", branch = "main" }
+isideload = { git = "https://github.com/espinosalastres-del/isideload", branch = "main" }
 idevice    = { git = "https://github.com/jkcoxson/idevice", branch = "master" }
 
 # CLI
