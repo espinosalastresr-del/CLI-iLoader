@@ -1,4 +1,4 @@
-name: Build Rust (Alpine compatible musl)
+name: Rust CI (Alpine compatible build)
 
 on:
   push:
@@ -8,79 +8,39 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:
-      CARGO_TERM_COLOR: always
-      RUST_BACKTRACE: 1
-      PKG_CONFIG_ALLOW_CROSS: 1
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
 
     steps:
-      # =========================
-      # 1. Checkout
-      # =========================
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # =========================
-      # 2. Install system deps
-      # (evita errores de libdbus-sys si algo se compila host-side)
-      # =========================
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config \
-            libdbus-1-dev \
-            build-essential \
-            clang
-
-      # =========================
-      # 3. Install Rust toolchain
-      # =========================
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
+          targets: ${{ matrix.target }}
 
-      # =========================
-      # 4. Install Cross (latest from repo, no old cache issues)
-      # =========================
       - name: Install cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      # =========================
-      # 5. Cache cargo (speed improvement)
-      # =========================
-      - name: Cache cargo registry
+      - name: Fix Docker permissions
+        run: |
+          sudo systemctl start docker
+          docker version
+
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ~/.cargo
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
-      # =========================
-      # 6. Ensure correct Cross image is pulled
-      # (evita que use GNU por defecto)
-      # =========================
-      - name: Pull musl cross image
+      - name: Build (cross musl)
+        env:
+          PKG_CONFIG_ALLOW_CROSS: 1
+          RUST_BACKTRACE: full
         run: |
-          docker pull ghcr.io/cross-rs/x86_64-unknown-linux-musl:edge
-
-      # =========================
-      # 7. Build (Alpine-compatible output)
-      # =========================
-      - name: Build release (musl)
-        run: |
-          cross build \
-            --release \
-            --target x86_64-unknown-linux-musl
-
-      # =========================
-      # 8. Upload artifact
-      # =========================
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: iloader-cli-alpine
-          path: target/x86_64-unknown-linux-musl/release/iloader
+          cross build --release --target ${{ matrix.target }}
