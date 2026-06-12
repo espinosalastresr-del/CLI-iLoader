@@ -1,0 +1,52 @@
+[package]
+name = "iloader-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "iloader"
+path = "src/main.rs"
+
+[dependencies]
+# Core sideloading — misma librería que usa el backend de iloader
+isideload = { git = "https://github.com/iloaderapp/isideload", branch = "main" }
+idevice    = { git = "https://github.com/jkcoxson/idevice", branch = "master" }
+
+# CLI
+clap       = { version = "4", features = ["derive", "env"] }
+
+# Async runtime
+tokio      = { version = "1", features = ["full"] }
+futures    = "0.3"
+
+# HTTP (para descargar IPAs)
+reqwest    = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+
+# Serialización
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+plist      = "1"
+
+# Crypto (requerido por isideload/rustls)
+rustls     = { version = "0.23", features = ["aws-lc-rs"] }
+
+# Errores
+thiserror  = "1"
+rootcause  = "0.1"
+
+# Logging
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Storage de credenciales — igual que el backend pero con fallback a fs
+keyring    = { version = "3", features = ["linux-secret-service-rt-tokio-crypto-openssl"] }
+
+# plist utils (igual que en pairing.rs)
+plist-macro = { git = "https://github.com/iloaderapp/plist-macro", branch = "main" }
+
+[profile.release]
+opt-level  = "z"     # Minimizar tamaño del binario
+lto        = true
+codegen-units = 1
+strip      = true
+panic      = "abort"
