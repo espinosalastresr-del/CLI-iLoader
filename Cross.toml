@@ -1,12 +1,2 @@
-[build.env]
-passthrough = [
-    "CARGO_TERM_COLOR",
-    "RUST_LOG",
-    "PKG_CONFIG_ALLOW_CROSS",
-]
-
 [target.x86_64-unknown-linux-musl]
-image = ".cross.Dockerfile"
-
-[target.aarch64-unknown-linux-musl]
-image = ".cross.Dockerfile"
+image = "cross-custom"
