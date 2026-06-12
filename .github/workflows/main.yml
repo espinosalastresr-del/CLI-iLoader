@@ -1,5 +1,22 @@
-- name: Build cross image
-  run: docker build -t cross-custom:latest -f .cross/Dockerfile .
+name: Build Rust (Alpine musl)
 
-- name: Build project
-  run: cross build --release --target x86_64-unknown-linux-musl
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build cross image
+        run: docker build -t cross-custom:latest -f .cross/Dockerfile .
+
+      - name: Build project
+        run: cross build --release --target x86_64-unknown-linux-musl
