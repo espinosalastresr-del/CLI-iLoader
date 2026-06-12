@@ -1,139 +1,52 @@
-name: Build & Release (Alpine/musl)
+name: Build CLI
 
 on:
+  workflow_dispatch:
   push:
-    tags:
-      - "v*"          # Publicar release al hacer: git tag v0.1.0 && git push --tags
-  workflow_dispatch:  # También permite lanzarlo manualmente desde la UI de GitHub
+    branches:
+      - main
 
-env:
-  CARGO_TERM_COLOR: always
-  BINARY_NAME: iloader
+permissions:
+  contents: read
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
-    runs-on: ubuntu-latest
-
     strategy:
-      fail-fast: false
       matrix:
-        include:
-          # ── Linux musl (Alpine compatible) ──────────────────────────────────
-          - target: x86_64-unknown-linux-musl
-            artifact: iloader-linux-x86_64
-          - target: aarch64-unknown-linux-musl
-            artifact: iloader-linux-aarch64
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Cache de Cargo para que builds sucesivos sean rápidos
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-${{ matrix.target }}-
-
-      - name: Instalar Rust toolchain estable
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      # cross-rs maneja TODO el cross-compilation via Docker internamente
-      - name: Instalar cross-rs
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
+      - name: Install Cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
 
-      # Compilar en modo release para musl
-      - name: Compilar
+      - name: Debug Git
         run: |
-          cross build \
-            --release \
+          git --version
+          git ls-remote https://github.com/espinosalastres-del/isideload.git
+
+      - name: Cargo Metadata
+        run: cargo metadata --format-version=1
+
+      - name: Build
+        run: |
+          cross build 
+            --release 
             --target ${{ matrix.target }}
 
-      # Renombrar el binario con el nombre de artefacto
-      - name: Preparar artefacto
-        run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} \
-             dist/${{ matrix.artifact }}
-          chmod +x dist/${{ matrix.artifact }}
-          # Comprimir para el release
-          tar -czf dist/${{ matrix.artifact }}.tar.gz \
-              -C dist ${{ matrix.artifact }}
-          # Checksum
-          sha256sum dist/${{ matrix.artifact }}.tar.gz \
-            > dist/${{ matrix.artifact }}.sha256
-
-      - name: Subir artefacto
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/
-          retention-days: 7
-
-  # ── Release automático cuando se hace push de un tag v* ──────────────────────
-  release:
-    name: Crear Release de GitHub
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-
-    permissions:
-      contents: write
-
-    steps:
-      - name: Descargar todos los artefactos
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      - name: Publicar Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "iloader CLI ${{ github.ref_name }}"
-          body: |
-            ## iloader CLI — ${{ github.ref_name }}
-
-            Binario CLI para instalar IPAs en iPhone/iPad desde Linux (Alpine/musl compatible).
-
-            ### Descarga
-
-            | Plataforma | Archivo |
-            |-----------|---------|
-            | Linux x86_64 (Alpine/musl) | `iloader-linux-x86_64` |
-            | Linux ARM64 (Raspberry Pi, etc.) | `iloader-linux-aarch64` |
-
-            ### Instalación rápida (Alpine)
-
-            ```sh
-            # Descargar
-            wget https://github.com/${{ github.repository }}/releases/latest/download/iloader-linux-x86_64
-            chmod +x iloader-linux-x86_64
-            mv iloader-linux-x86_64 /usr/local/bin/iloader
-
-            # Instalar SideStore (requiere anisette corriendo en Docker)
-            iloader install-sidestore -a tuapple@id.com -p tupassword
-            ```
-
-            ### Requisitos en Alpine
-            ```sh
-            apk add usbmuxd libimobiledevice docker
-            docker run -d --restart always -p 6969:6969 \
-              --volume anisette_data:/home/Alcoholic/.config/anisette-v3/lib/ \
-              --name anisette dadoum/anisette-v3-server:latest
-            ```
-          files: |
-            artifacts/**/*.tar.gz
-            artifacts/**/*.sha256
-          draft: false
-          prerelease: false
+          name: iloader-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/iloader
