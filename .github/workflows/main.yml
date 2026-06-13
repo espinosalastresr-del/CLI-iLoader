@@ -17,6 +17,14 @@ jobs:
 
       - name: Build cross image
         run: docker build -t cross-custom:latest -f .cross/Dockerfile .
+        
+      - name: Inspect idevice
+        run: |
+         find ~/.cargo -name mod.rs | grep remote_pairing
+         grep -n "pub struct RemotePairingClient" -A50 -B10 ~/.cargo/registry/src/*/idevice-0.1.61/src/remote_pairing/mod.rs || true
+         grep -n "pub async fn connect" -A50 -B10 ~/.cargo/registry/src/*/idevice-0.1.61/src/remote_pairing/mod.rs || true
       
+
+
       - name: Build project
         run: cross build --release --target x86_64-unknown-linux-musl
