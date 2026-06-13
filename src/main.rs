@@ -545,7 +545,7 @@ async fn generate_rppairing(
 
     // La API real de 0.1.61: no tiene create_software_tunnel()
     // Usar el tunnel TCP stack integrado en CoreDeviceProxy
-    let mut adapter = proxy.start_tcp_tunnel().await?;
+    let mut adapter = proxy.create_software_tunnel()?;
 
     info!("Performing RSD handshake…");
     let rsd_stream = adapter.connect(rsd_port).await?;
