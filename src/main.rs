@@ -284,21 +284,41 @@ async fn cmd_revoke_cert(apple_id: &str, password: &str, serial: &str, anisette_
     Ok(())
 }
 
-async fn cmd_app_ids(apple_id: &str, password: &str, anisette_url: &str, data_dir: &PathBuf) -> Result<(), CliError> {
-    let mut sideloader = authenticate(apple_id, password, anisette_url, data_dir).await?;
-    let team = sideloader.get_team().await.map_err(|e| CliError::Auth(e.to_string()))?;
-    let resp = sideloader.get_dev_session()
-        .list_app_ids(&team, None).await
+async fn cmd_app_ids(
+    apple_id: &str,
+    password: &str,
+    anisette_url: &str,
+    data_dir: &PathBuf,
+) -> Result<(), CliError> {
+    let mut sideloader =
+        authenticate(apple_id, password, anisette_url, data_dir).await?;
+
+    let team = sideloader
+        .get_team()
+        .await
         .map_err(|e| CliError::Auth(e.to_string()))?;
 
-    // El compilador reveló los campos reales: app_ids, max_quantity, available_quantity
+    let resp = sideloader
+        .get_dev_session()
+        .list_app_ids(&team, None)
+        .await
+        .map_err(|e| CliError::Auth(e.to_string()))?;
+
     println!(
-    "App IDs ({} de {} slots, {} disponibles):\n",
-    resp.app_ids.len(),
-    resp.max_quantity.map(|v| v.to_string()).unwrap_or("?".into()),
-    resp.available_quantity.map(|v| v.to_string()).unwrap_or("?".into())
-);
+        "App IDs ({} de {} slots, {} disponibles):\n",
+        resp.app_ids.len(),
+        resp.max_quantity
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "?".to_string()),
+        resp.available_quantity
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "?".to_string())
+    );
+
+    for app in &resp.app_ids {
+        println!("{:#?}", app);
     }
+
     Ok(())
 }
 
