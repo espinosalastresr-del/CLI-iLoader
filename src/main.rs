@@ -292,11 +292,12 @@ async fn cmd_app_ids(apple_id: &str, password: &str, anisette_url: &str, data_di
         .map_err(|e| CliError::Auth(e.to_string()))?;
 
     // El compilador reveló los campos reales: app_ids, max_quantity, available_quantity
-    println!("App IDs ({} de {} slots, {} disponibles):\n",
-        resp.app_ids.len(), resp.max_quantity, resp.available_quantity);
-    for app in &resp.app_ids {
-        // app.name es String, no Option<String>
-        println!("  {}  —  {}", app.identifier, app.name);
+    println!(
+    "App IDs ({} de {} slots, {} disponibles):\n",
+    resp.app_ids.len(),
+    resp.max_quantity.map(|v| v.to_string()).unwrap_or("?".into()),
+    resp.available_quantity.map(|v| v.to_string()).unwrap_or("?".into())
+);
     }
     Ok(())
 }
