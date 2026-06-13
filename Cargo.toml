@@ -27,6 +27,7 @@ idevice = { version = "0.1.61", default-features = false, features = [
     "core_device_proxy",
     "xpc",
     "ring",
+    "tunnel_tcp_stack",
 ] }
 
 # CLI
