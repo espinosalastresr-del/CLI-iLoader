@@ -1,5 +1,5 @@
 [package]
-name = "iloader-cli"
+name    = "iloader-cli"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,7 +8,7 @@ name = "iloader"
 path = "src/main.rs"
 
 [dependencies]
-# Backend principal
+# Mismo fork que usa el backend de iloader — tiene la API que necesitamos
 isideload = {
     git = "https://github.com/espinosalastresr-del/isideload.git",
     branch = "main",
@@ -16,34 +16,45 @@ isideload = {
     features = ["install", "fs-storage"]
 }
 
-# Mantener la misma versión que usa isideload
-idevice = "0.1.61"
+# idevice debe ser el mismo que usa el fork de isideload para que RemotePairingClient::new(3 args) funcione
+# Ponemos la misma versión que resuelve el fork
+idevice = { version = "0.1.61", default-features = false, features = [
+    "usbmuxd",
+    "afc",
+    "house_arrest",
+    "installation_proxy",
+    "pair",
+    "core_device_proxy",
+    "xpc",
+    "ring",
+] }
 
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
 
 # Async
 tokio = { version = "1", features = ["full"] }
-futures-util = "0.3"
 
-# HTTP
+# HTTP — rustls-tls para evitar depender de OpenSSL del sistema (musl-safe)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 
-# Serialización
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# Plist (para combinar lockdown + rppairing)
 plist = "1"
 
+# Serialización
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 # Logging
-tracing = "0.1"
+tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 # Errores
 thiserror = "2"
 
 [profile.release]
-opt-level = "z"
-lto = true
+opt-level     = "z"
+lto           = true
 codegen-units = 1
-strip = true
-panic = "abort"
+strip         = true
+panic         = "abort"
