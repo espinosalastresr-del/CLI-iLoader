@@ -17,9 +17,6 @@ jobs:
 
       - name: Build cross image
         run: docker build -t cross-custom:latest -f .cross/Dockerfile .
-
-      - name: Show dependency chain
-        run: cargo tree -i libdbus-sys
       
       - name: Build project
         run: cross build --release --target x86_64-unknown-linux-musl
