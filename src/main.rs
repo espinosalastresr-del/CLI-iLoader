@@ -123,6 +123,11 @@ async fn main() {
         )
         .with_target(false).compact().init();
 
+    // Inicializar crypto provider de rustls (requerido antes de cualquier conexión TLS)
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .unwrap_or(()); // ignorar si ya fue instalado
+
     isideload::init().expect("isideload::init() failed");
 
     let anisette_url = normalize_url(&cli.anisette);
@@ -157,9 +162,7 @@ async fn main() {
 // ─── Comandos ─────────────────────────────────────────────────────────────────
 
 async fn cmd_devices() -> Result<(), CliError> {
-    eprintln!("→ Conectando a usbmuxd...");
     let mut conn = usbmuxd_conn().await?;
-    eprintln!("→ Obteniendo lista de dispositivos...");
     let devs = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         conn.get_devices(),
@@ -361,15 +364,40 @@ fn make_storage(data_dir: &PathBuf) -> Box<dyn SideloadingStorage> {
 // ─── Device ───────────────────────────────────────────────────────────────────
 
 async fn usbmuxd_conn() -> Result<UsbmuxdConnection, CliError> {
-    tokio::time::timeout(
+    // Intentar primero con el socket que exista en el sistema
+    // Alpine/musl puede tener el socket en /run/usbmuxd o /var/run/usbmuxd
+    let sockets = ["/var/run/usbmuxd", "/run/usbmuxd", "/tmp/usbmuxd"];
+    for path in &sockets {
+        if std::path::Path::new(path).exists() {
+            std::env::set_var("USBMUXD_SOCKET_ADDRESS", path);
+            break;
+        }
+    }
+
+    match tokio::time::timeout(
         std::time::Duration::from_secs(5),
         UsbmuxdConnection::default(),
     )
     .await
-    .map_err(|_| CliError::Usbmuxd(
-        "Timeout (5s) conectando a usbmuxd. Comprueba que corre: pgrep usbmuxd".into()
-    ))?
-    .map_err(|e| CliError::Usbmuxd(e.to_string()))
+    {
+        Ok(Ok(conn)) => Ok(conn),
+        Ok(Err(e)) => Err(CliError::Usbmuxd(format!(
+            "Error conectando a usbmuxd: {e}
+            
+Solución:
+            \  doas rm -f /var/run/usbmuxd /run/usbmuxd
+            \  doas killall usbmuxd 2>/dev/null; doas usbmuxd -f &
+            \  (luego pulsa Confiar en el iPhone si aparece el diálogo)"
+        ))),
+        Err(_) => Err(CliError::Usbmuxd(
+            "Timeout (5s) conectando a usbmuxd.
+            
+Solución:
+            \  doas rm -f /var/run/usbmuxd /run/usbmuxd
+            \  doas killall usbmuxd 2>/dev/null; doas usbmuxd -f &
+            \  (luego pulsa Confiar en el iPhone si aparece el diálogo)".into()
+        )),
+    }
 }
 
 fn usbmuxd_addr() -> Result<UsbmuxdAddr, CliError> {
