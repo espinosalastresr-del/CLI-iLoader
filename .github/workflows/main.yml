@@ -1,8 +1,11 @@
-name: Build Rust (Alpine musl)
+name: Build (Alpine/musl)
 
 on:
   push:
   workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   build:
@@ -12,20 +15,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-musl-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-musl-
 
-      - name: Build cross image
-        run: docker build -t cross-custom:latest -f .cross/Dockerfile .
-        
-      - name: Inspect idevice
-        run: |
-         find ~/.cargo -path "*idevice-0.1.61*" | sort
-         grep -R "RemotePairingClient" ~/.cargo/registry/src/*/idevice-0.1.61/src || true
+      - name: Instalar Rust + target musl
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
 
-         grep -R "CoreDeviceProxy" ~/.cargo/registry/src/*/idevice-0.1.61/src || true
+      - name: Instalar cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
-         grep -R "HouseArrestClient" ~/.cargo/registry/src/*/idevice-0.1.61/src || true
-
-      - name: Build project
+      - name: Compilar para musl
         run: cross build --release --target x86_64-unknown-linux-musl
+
+      - name: Preparar binario
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-musl/release/iloader dist/iloader-linux-x86_64
+          chmod +x dist/iloader-linux-x86_64
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: iloader-linux-x86_64
+          path: dist/iloader-linux-x86_64
+          retention-days: 14
