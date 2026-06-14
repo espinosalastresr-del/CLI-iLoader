@@ -16,7 +16,6 @@ use idevice::{
     provider::IdeviceProvider,
     remote_pairing::{RemotePairingClient, RpPairingFile},
     rsd::RsdHandshake,
-    tcp::{adapter::Adapter, handle::AdapterHandle},
     usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdConnection},
 };
 use isideload::{
@@ -383,19 +382,19 @@ async fn usbmuxd_conn() -> Result<UsbmuxdConnection, CliError> {
         Ok(Ok(conn)) => Ok(conn),
         Ok(Err(e)) => Err(CliError::Usbmuxd(format!(
             "Error conectando a usbmuxd: {e}
-            
-Solución:
-            \  doas rm -f /var/run/usbmuxd /run/usbmuxd
-            \  doas killall usbmuxd 2>/dev/null; doas usbmuxd -f &
-            \  (luego pulsa Confiar en el iPhone si aparece el diálogo)"
+
+Solucion:
+  doas rm -f /var/run/usbmuxd /run/usbmuxd
+  doas killall usbmuxd 2>/dev/null; doas usbmuxd -f &
+  (luego pulsa Confiar en el iPhone si aparece el dialogo)"
         ))),
         Err(_) => Err(CliError::Usbmuxd(
             "Timeout (5s) conectando a usbmuxd.
-            
-Solución:
-            \  doas rm -f /var/run/usbmuxd /run/usbmuxd
-            \  doas killall usbmuxd 2>/dev/null; doas usbmuxd -f &
-            \  (luego pulsa Confiar en el iPhone si aparece el diálogo)".into()
+
+Solucion:
+  doas rm -f /var/run/usbmuxd /run/usbmuxd
+  doas killall usbmuxd 2>/dev/null; doas usbmuxd -f &
+  (luego pulsa Confiar en el iPhone si aparece el dialogo)".into()
         )),
     }
 }
