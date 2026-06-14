@@ -157,8 +157,16 @@ async fn main() {
 // ─── Comandos ─────────────────────────────────────────────────────────────────
 
 async fn cmd_devices() -> Result<(), CliError> {
+    eprintln!("→ Conectando a usbmuxd...");
     let mut conn = usbmuxd_conn().await?;
-    let devs = conn.get_devices().await.map_err(|e| CliError::Usbmuxd(e.to_string()))?;
+    eprintln!("→ Obteniendo lista de dispositivos...");
+    let devs = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        conn.get_devices(),
+    )
+    .await
+    .map_err(|_| CliError::Usbmuxd("Timeout (5s) esperando lista de dispositivos de usbmuxd".into()))?
+    .map_err(|e| CliError::Usbmuxd(e.to_string()))?;
     if devs.is_empty() {
         println!("Sin dispositivos. Conecta el iPhone y pulsa 'Confiar'.");
         return Ok(());
@@ -353,7 +361,15 @@ fn make_storage(data_dir: &PathBuf) -> Box<dyn SideloadingStorage> {
 // ─── Device ───────────────────────────────────────────────────────────────────
 
 async fn usbmuxd_conn() -> Result<UsbmuxdConnection, CliError> {
-    UsbmuxdConnection::default().await.map_err(|e| CliError::Usbmuxd(e.to_string()))
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        UsbmuxdConnection::default(),
+    )
+    .await
+    .map_err(|_| CliError::Usbmuxd(
+        "Timeout (5s) conectando a usbmuxd. Comprueba que corre: pgrep usbmuxd".into()
+    ))?
+    .map_err(|e| CliError::Usbmuxd(e.to_string()))
 }
 
 fn usbmuxd_addr() -> Result<UsbmuxdAddr, CliError> {
@@ -364,7 +380,13 @@ async fn select_device(udid: Option<&str>)
     -> Result<(idevice::provider::UsbmuxdProvider, String), CliError>
 {
     let mut conn = usbmuxd_conn().await?;
-    let devs = conn.get_devices().await.map_err(|e| CliError::Usbmuxd(e.to_string()))?;
+    let devs = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        conn.get_devices(),
+    )
+    .await
+    .map_err(|_| CliError::Usbmuxd("Timeout (5s) esperando lista de dispositivos de usbmuxd".into()))?
+    .map_err(|e| CliError::Usbmuxd(e.to_string()))?;
     if devs.is_empty() { return Err(CliError::NoDevice); }
     let dev = if let Some(u) = udid {
         devs.into_iter().find(|d| d.udid == u)
@@ -441,7 +463,13 @@ async fn generate_pairing_bytes(udid: &str) -> Result<Vec<u8>, CliError> {
         .map_err(|e| CliError::Pairing(format!("get_pair_record: {e}")))?;
     rec.udid = Some(udid.to_string());
 
-    let devs = conn.get_devices().await.map_err(|e| CliError::Usbmuxd(e.to_string()))?;
+    let devs = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        conn.get_devices(),
+    )
+    .await
+    .map_err(|_| CliError::Usbmuxd("Timeout (5s) esperando lista de dispositivos de usbmuxd".into()))?
+    .map_err(|e| CliError::Usbmuxd(e.to_string()))?;
     let dev = devs.into_iter().find(|d| d.udid == udid)
         .ok_or_else(|| CliError::DeviceNotFound(udid.to_string()))?;
     // FIX: to_provider(addr, label) — 2 argumentos
