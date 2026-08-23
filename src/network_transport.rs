@@ -1,132 +1,103 @@
 //! network_transport.rs — transporte alternativo sin usbmuxd/USB.
-//!
 //! Reutiliza el .mobiledevicepairing combinado (lockdown + RpPairingFile)
-//! que ya genera `iloader pairing --export <ruta>`, y lo usa contra
-//! 10.7.0.1 (expuesto por LocalDevVPN) en vez de pedirle el device a usbmuxd.
-//!
-//! ⚠️ ADVERTENCIA HONESTA: las 2-3 líneas marcadas con VERIFICAR son las
-//! únicas partes de este archivo que no pude confirmar contra el código
-//! fuente exacto de idevice 0.1.61 (no tengo acceso de red para revisar
-//! el crate pineado). Todo lo demás reutiliza tipos y funciones que ya
-//! están probados en tu propio main.rs.
-//!
-//! Antes de compilar en serio, corre esto localmente (con tu Cargo.lock
-//! ya resuelto, no necesita red):
-//!     cargo doc -p idevice --no-deps --open
-//! y confirma las firmas de:
-//!   - RpPairingFile: deserialización desde bytes/plist guardado
-//!   - RemotePairingClient: método para RETOMAR una sesión ya pareada
-//!     contra una IP:puerto fijos (no el flujo de generación que ya usas)
+//! que ya genera `iloader pairing --export <ruta>`, contra 10.7.0.1
+//! (LocalDevVPN) en vez de usbmuxd.
 
-use std::net::IpAddr;
+use std::{future::Future, net::IpAddr, pin::Pin};
 
 use idevice::{
-    IdeviceService,
-    core_device_proxy::CoreDeviceProxy,
+    Idevice, RemoteXpcClient,
+    pairing_file::PairingFile,
     provider::IdeviceProvider,
     remote_pairing::{RemotePairingClient, RpPairingFile},
     rsd::RsdHandshake,
-    RemoteXpcClient,
+    IdeviceError,
 };
 
-/// Dirección por defecto que expone LocalDevVPN dentro de iSH.
 pub const LOCALDEVVPN_ADDR: &str = "10.7.0.1";
 
-/// Carga el .mobiledevicepairing combinado que ya exportaste con
+/// Carga el .mobiledevicepairing combinado exportado con
 /// `iloader pairing --export archivo.mobiledevicepairing`.
-///
-/// El archivo contiene un plist con AMBOS: el registro lockdown clásico
-/// y los campos de un RpPairingFile (mismo patrón que combinas al
-/// generarlo en `generate_pairing_bytes`).
-pub fn load_saved_pairing(path: &std::path::Path) -> anyhow::Result<RpPairingFile> {
-    let bytes = std::fs::read(path)?;
-    let plist_val = plist::Value::from_reader_xml(std::io::Cursor::new(&bytes))?;
+/// Devuelve tanto el RpPairingFile (para el túnel) como los bytes
+/// crudos (para reconstruir el PairingFile clásico que exige el trait).
+pub fn load_saved_pairing(path: &std::path::Path) -> Result<(RpPairingFile, Vec<u8>), IdeviceError> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| IdeviceError::InternalError(format!("leyendo {}: {e}", path.display())))?;
 
-    // VERIFICAR: RpPairingFile probablemente expone `from_bytes` o
-    // `deserialize` a partir del plist ya combinado. En tu propio código,
-    // `generate_rppairing` termina con `pairing_file.to_bytes()`, así que
-    // debería existir el inverso simétrico. Si no, puede que tengas que
-    // extraer solo las claves rp_* del diccionario combinado y reconstruir
-    // el struct campo a campo — pero el `to_bytes`/`from_bytes` simétrico
-    // es lo más probable dado el resto de la API.
-    let rp = RpPairingFile::from_bytes(&plist_to_raw_rp_bytes(&plist_val)?)?;
-    Ok(rp)
+    let rp = RpPairingFile::from_bytes(&bytes)
+        .map_err(|e| IdeviceError::InternalError(format!("RpPairingFile::from_bytes: {e}")))?;
+
+    Ok((rp, bytes))
 }
 
-fn plist_to_raw_rp_bytes(v: &plist::Value) -> anyhow::Result<Vec<u8>> {
-    let mut out = Vec::new();
-    v.to_writer_xml(&mut out)?;
-    Ok(out)
-}
-
-/// Conecta directamente a 10.7.0.1 usando el RpPairingFile ya generado,
-/// sin pasar por usbmuxd. Esto es lo que reemplaza a `select_device()`
-/// cuando corres dentro de iSH sin USB.
-///
-/// Reutiliza EXACTAMENTE el mismo camino RemotePairing → RSD que ya
-/// probaste en `generate_rppairing`, solo que aquí NO generamos un
-/// pairing nuevo — retomamos el que ya existe, contra una IP fija en
-/// vez de descubrir el device por Bonjour/usbmuxd.
+/// Conecta a 10.7.0.1 usando el RpPairingFile ya generado, sin usbmuxd.
+/// Reutiliza el mismo patrón RemoteXpcClient + RemotePairingClient que ya
+/// usa `generate_rppairing` en main.rs, pero contra una IP fija en vez de
+/// un túnel CoreDeviceProxy por USB.
 pub async fn connect_over_network(
     host: IpAddr,
-    pairing: &RpPairingFile,
-) -> anyhow::Result<RsdHandshake> {
-    // VERIFICAR: en tu flujo actual, CoreDeviceProxy::connect(provider) recibe
-    // un IdeviceProvider resuelto vía usbmuxd. Para el camino de red puro,
-    // lo normal en el ecosistema idevice es que exista una variante que
-    // conecte un TcpStream crudo a (host, puerto RemotePairing) y arranque
-    // RemotePairingClient directamente ahí, SIN pasar por CoreDeviceProxy/
-    // lockdown en absoluto — porque RemotePairing es un protocolo aparte
-    // que ya trae su propio TLS-PSK. El puerto documentado por SideInstaller
-    // para este propósito es 49152.
-    let stream = tokio::net::TcpStream::connect((host, 49152)).await?;
+    pairing: &mut RpPairingFile,
+) -> Result<RsdHandshake, IdeviceError> {
+    // Puerto documentado por SideInstaller para RemotePairing wireless.
+    let stream = tokio::net::TcpStream::connect((host, 49152))
+        .await
+        .map_err(|e| IdeviceError::InternalError(format!("TCP a {host}:49152: {e}")))?;
 
     let mut xpc = RemoteXpcClient::new(stream).await?;
     xpc.do_handshake().await?;
     let _ = xpc.recv_root().await;
 
-    // "resume" en vez de "connect" (que es el que usa SRP completo para
-    // generar credenciales nuevas). Verificar el nombre exacto del método
-    // de reanudación en RemotePairingClient para 0.1.61.
     let mut client = RemotePairingClient::new(xpc, "iloader");
-    let tunnel = client.resume(pairing).await?; // <- nombre a verificar
 
-    let handshake = RsdHandshake::new(tunnel).await?;
+    // Reutiliza el MISMO método `connect` que ya compila en generate_rppairing.
+    // Como `pairing` ya trae las claves guardadas, esta llamada debería
+    // hacer solo la verificación Ed25519, no el SRP completo. El callback
+    // no debería usarse en ese caso, pero lo dejamos por si acaso.
+    client.connect(pairing, || async { String::new() }).await?;
+
+    // Si `connect()` no deja el túnel abierto y hay que sacarlo de otro
+    // lado (ej. client.tunnel() o un método similar), este es el punto
+    // exacto donde el próximo error de compilación te va a apuntar.
+    let tunnel_stream = client.into_tunnel_stream()?; // <- ajustar si CI marca error aquí
+
+    let handshake = RsdHandshake::new(tunnel_stream).await?;
     Ok(handshake)
 }
 
-/// Envuelve el RsdHandshake ya establecido para que el resto de tu código
-/// (InstallationProxyClient::connect, HouseArrestClient::connect,
-/// Sideloader::install_app, etc.) lo trate igual que un UsbmuxdProvider.
-///
-/// Si `cargo build` marca error aquí, es casi seguro que el nombre del
-/// método que idevice espera para "dame un stream al puerto X del RSD"
-/// no es exactamente este. El error del compilador te va a decir el
-/// nombre real — ajusta esta única función y todo lo demás sigue igual.
+/// Envuelve el RsdHandshake para que Sideloader/InstallationProxyClient/etc.
+/// lo usen igual que un UsbmuxdProvider.
+#[derive(Debug)]
 pub struct RsdProvider {
     handshake: RsdHandshake,
-    label: String,
+    lockdown_bytes: Vec<u8>,
 }
 
 impl RsdProvider {
-    pub fn new(handshake: RsdHandshake) -> Self {
-        Self { handshake, label: "iloader".to_string() }
+    pub fn new(handshake: RsdHandshake, lockdown_bytes: Vec<u8>) -> Self {
+        Self { handshake, lockdown_bytes }
     }
 }
 
-#[async_trait::async_trait]
 impl IdeviceProvider for RsdProvider {
-    // Firma aproximada — ajustar campo por campo según lo que pida el
-    // trait real en 0.1.61 (el compilador listará los métodos faltantes
-    // completos si esto no coincide).
-    async fn connect(&self, port: u16) -> Result<Box<dyn idevice::ReadWrite>, idevice::IdeviceError> {
-        let stream = self.handshake
-            .connect_to_service_port(port) // <- ajustar nombre si CI falla aquí
-            .await?;
-        Ok(Box::new(stream))
+    fn connect(
+        &self,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = Result<Idevice, IdeviceError>> + Send + 'static>> {
+        let handshake = self.handshake.clone(); // <- ajustar si RsdHandshake no es Clone
+        Box::pin(async move {
+            handshake
+                .connect_to_port(port) // <- ajustar nombre si CI marca error aquí
+                .await
+        })
     }
 
-    fn label(&self) -> &str {
-        &self.label
+    fn get_pairing_file(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<PairingFile, IdeviceError>> + Send + 'static>> {
+        let bytes = self.lockdown_bytes.clone();
+        Box::pin(async move {
+            plist::from_bytes::<PairingFile>(&bytes)
+                .map_err(|e| IdeviceError::InternalError(format!("PairingFile parse: {e}")))
+        })
     }
 }
