@@ -237,15 +237,15 @@ async fn cmd_install_network(
     ))?;
 
     println!("🔑 Cargando pairing file: {}", pairing_path.display());
-    let rp_pairing = network_transport::load_saved_pairing(&pairing_path)
+    let (mut rp_pairing, lockdown_bytes) = network_transport::load_saved_pairing(&pairing_path)
         .map_err(|e| CliError::Network(format!("No se pudo cargar el pairing file: {e}")))?;
 
     println!("🌐 Conectando a {ip} (LocalDevVPN)…");
-    let handshake = network_transport::connect_over_network(ip, &rp_pairing).await
+    let handshake = network_transport::connect_over_network(ip, &mut rp_pairing).await
         .map_err(|e| CliError::Network(format!("Fallo en el túnel RSD: {e}")))?;
     println!("✅ Túnel RSD establecido ({} servicios)", handshake.services.len());
 
-    let provider = network_transport::RsdProvider::new(handshake);
+    let provider = network_transport::RsdProvider::new(handshake, lockdown_bytes);
 
     let ipa_path = resolve_ipa(ipa).await?;
     let mut sideloader = authenticate(apple_id, password, anisette_url, data_dir).await?;
