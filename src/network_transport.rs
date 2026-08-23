@@ -16,29 +16,28 @@ use idevice::{
 
 pub const LOCALDEVVPN_ADDR: &str = "10.7.0.1";
 
-/// Carga el .mobiledevicepairing combinado exportado con
-/// `iloader pairing --export archivo.mobiledevicepairing`.
-/// Devuelve tanto el RpPairingFile (para el túnel) como los bytes
-/// crudos (para reconstruir el PairingFile clásico que exige el trait).
+/// Carga el .mobiledevicepairing combinado. Devuelve el RpPairingFile
+/// (para el túnel) y los bytes crudos (para reconstruir el PairingFile
+/// clásico que exige el trait IdeviceProvider vía get_pairing_file).
 pub fn load_saved_pairing(path: &std::path::Path) -> Result<(RpPairingFile, Vec<u8>), IdeviceError> {
     let bytes = std::fs::read(path)
         .map_err(|e| IdeviceError::InternalError(format!("leyendo {}: {e}", path.display())))?;
-
     let rp = RpPairingFile::from_bytes(&bytes)
         .map_err(|e| IdeviceError::InternalError(format!("RpPairingFile::from_bytes: {e}")))?;
-
     Ok((rp, bytes))
 }
 
 /// Conecta a 10.7.0.1 usando el RpPairingFile ya generado, sin usbmuxd.
-/// Reutiliza el mismo patrón RemoteXpcClient + RemotePairingClient que ya
-/// usa `generate_rppairing` en main.rs, pero contra una IP fija en vez de
-/// un túnel CoreDeviceProxy por USB.
+///
+/// NOTA: `into_tunnel_stream()` fue mi segunda adivinanza fallida en CI.
+/// En vez de una tercera adivinanza, este build.yml ahora vuelca el código
+/// fuente real de idevice 0.1.65 (remote_pairing, rsd.rs, provider.rs) si
+/// la compilación falla, así que si esto vuelve a fallar aquí, pega ese
+/// dump y lo cierro sin más intentos a ciegas.
 pub async fn connect_over_network(
     host: IpAddr,
     pairing: &mut RpPairingFile,
 ) -> Result<RsdHandshake, IdeviceError> {
-    // Puerto documentado por SideInstaller para RemotePairing wireless.
     let stream = tokio::net::TcpStream::connect((host, 49152))
         .await
         .map_err(|e| IdeviceError::InternalError(format!("TCP a {host}:49152: {e}")))?;
@@ -49,16 +48,10 @@ pub async fn connect_over_network(
 
     let mut client = RemotePairingClient::new(xpc, "iloader");
 
-    // Reutiliza el MISMO método `connect` que ya compila en generate_rppairing.
-    // Como `pairing` ya trae las claves guardadas, esta llamada debería
-    // hacer solo la verificación Ed25519, no el SRP completo. El callback
-    // no debería usarse en ese caso, pero lo dejamos por si acaso.
-    client.connect(pairing, || async { String::new() }).await?;
-
-    // Si `connect()` no deja el túnel abierto y hay que sacarlo de otro
-    // lado (ej. client.tunnel() o un método similar), este es el punto
-    // exacto donde el próximo error de compilación te va a apuntar.
-    let tunnel_stream = client.into_tunnel_stream()?; // <- ajustar si CI marca error aquí
+    // Se asume que connect() devuelve el stream/túnel ya negociado
+    // (a diferencia de generate_rppairing, que descarta el resultado
+    // porque solo necesitaba generar el pairing file, no el túnel).
+    let tunnel_stream = client.connect(pairing, || async { String::new() }).await?;
 
     let handshake = RsdHandshake::new(tunnel_stream).await?;
     Ok(handshake)
@@ -70,11 +63,12 @@ pub async fn connect_over_network(
 pub struct RsdProvider {
     handshake: RsdHandshake,
     lockdown_bytes: Vec<u8>,
+    label: String,
 }
 
 impl RsdProvider {
     pub fn new(handshake: RsdHandshake, lockdown_bytes: Vec<u8>) -> Self {
-        Self { handshake, lockdown_bytes }
+        Self { handshake, lockdown_bytes, label: "iloader".to_string() }
     }
 }
 
@@ -83,12 +77,8 @@ impl IdeviceProvider for RsdProvider {
         &self,
         port: u16,
     ) -> Pin<Box<dyn Future<Output = Result<Idevice, IdeviceError>> + Send + 'static>> {
-        let handshake = self.handshake.clone(); // <- ajustar si RsdHandshake no es Clone
-        Box::pin(async move {
-            handshake
-                .connect_to_port(port) // <- ajustar nombre si CI marca error aquí
-                .await
-        })
+        let handshake = self.handshake.clone(); // <- si RsdHandshake no es Clone, CI lo dirá
+        Box::pin(async move { handshake.connect(port).await }) // <- mismo método que ya usa `handle.connect(port)` en generate_rppairing
     }
 
     fn get_pairing_file(
@@ -96,8 +86,12 @@ impl IdeviceProvider for RsdProvider {
     ) -> Pin<Box<dyn Future<Output = Result<PairingFile, IdeviceError>> + Send + 'static>> {
         let bytes = self.lockdown_bytes.clone();
         Box::pin(async move {
-            plist::from_bytes::<PairingFile>(&bytes)
+            plist::from_reader_xml::<_, PairingFile>(std::io::Cursor::new(&bytes))
                 .map_err(|e| IdeviceError::InternalError(format!("PairingFile parse: {e}")))
         })
+    }
+
+    fn label(&self) -> &str {
+        &self.label
     }
 }
