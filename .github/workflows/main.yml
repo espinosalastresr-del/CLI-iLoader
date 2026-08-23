@@ -38,13 +38,25 @@ jobs:
           tool: cross
 
       - name: Compilar para i686-musl
+        id: build
         run: cross build --release --target i686-unknown-linux-musl
-        # RIESGO CONOCIDO: la imagen Docker que usa `cross` para este target
-        # normalmente trae musl más reciente que el de Alpine 3.14.3.
-        # Si el binario falla en iSH con errores de symbol/syscall en tiempo de
-        # ejecución (no en compilación), el problema es ABI de musl, no el código.
-        # Mitigación si ocurre: compilar con un Cross.toml que fije una imagen
-        # base más vieja, o compilar estático con `+crt-static` y probar.
+        continue-on-error: true
+
+      # Si falla, imprime el código fuente real de idevice ya descargado
+      # en el runner, para no seguir adivinando nombres de métodos.
+      - name: Dump fuente idevice (solo si falló la build)
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "===== provider.rs ====="
+          find ~/.cargo/registry/src -path '*idevice-0.1.65/src/provider.rs' -exec cat {} \;
+          echo "===== remote_pairing (todo el módulo) ====="
+          find ~/.cargo/registry/src -path '*idevice-0.1.65/src/remote_pairing*' -exec sh -c 'echo "--- {} ---"; cat {}' \;
+          echo "===== rsd.rs ====="
+          find ~/.cargo/registry/src -path '*idevice-0.1.65/src/rsd.rs' -exec cat {} \;
+
+      - name: Fallar el job si la build falló
+        if: steps.build.outcome == 'failure'
+        run: exit 1
 
       - name: Preparar binario
         run: |
