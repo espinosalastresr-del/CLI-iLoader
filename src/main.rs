@@ -1,7 +1,10 @@
 //! iloader CLI — instala IPAs en iPhone desde Alpine Linux (musl)
 
+mod network_transport;
+
 use std::{
     io::{self, Write},
+    net::IpAddr,
     path::PathBuf,
 };
 
@@ -56,6 +59,14 @@ enum Commands {
         #[arg(short, long, env = "ILOADER_APPLE_PASSWORD")] password: String,
         #[arg(short, long)] udid: Option<String>,
         #[arg(value_name = "IPA")] ipa: String,
+        /// IP del dispositivo por red (ej: 10.7.0.1 vía LocalDevVPN en iSH).
+        /// Si se especifica, ignora usbmuxd y usa el pairing file exportado.
+        #[arg(long)]
+        host: Option<String>,
+        /// Ruta al .mobiledevicepairing exportado con `iloader pairing --export`.
+        /// Requerido si se usa --host.
+        #[arg(long)]
+        pairing_file: Option<PathBuf>,
     },
     /// Descargar e instalar SideStore
     InstallSidestore {
@@ -104,6 +115,7 @@ enum CliError {
     #[error("Sideloading: {0}")]     Sideload(String),
     #[error("Pairing: {0}")]         Pairing(String),
     #[error("Descarga: {0}")]        Download(String),
+    #[error("Red: {0}")]             Network(String),
     #[error("E/S: {0}")]             Io(#[from] io::Error),
     #[error("{0}")]                  Other(String),
 }
@@ -122,10 +134,9 @@ async fn main() {
         )
         .with_target(false).compact().init();
 
-    // Inicializar crypto provider de rustls (requerido antes de cualquier conexión TLS)
     rustls::crypto::ring::default_provider()
         .install_default()
-        .unwrap_or(()); // ignorar si ya fue instalado
+        .unwrap_or(());
 
     isideload::init().expect("isideload::init() failed");
 
@@ -138,8 +149,13 @@ async fn main() {
 
     let result = match cli.command {
         Commands::Devices => cmd_devices().await,
-        Commands::Install { apple_id, password, udid, ipa } =>
-            cmd_install(&apple_id, &password, udid.as_deref(), &ipa, &anisette_url, &data_dir).await,
+        Commands::Install { apple_id, password, udid, ipa, host, pairing_file } => {
+            if let Some(host) = host {
+                cmd_install_network(&apple_id, &password, &host, pairing_file, &ipa, &anisette_url, &data_dir).await
+            } else {
+                cmd_install(&apple_id, &password, udid.as_deref(), &ipa, &anisette_url, &data_dir).await
+            }
+        }
         Commands::InstallSidestore { apple_id, password, udid, nightly, live_container } =>
             cmd_install_sidestore(&apple_id, &password, udid.as_deref(), nightly, live_container, &anisette_url, &data_dir).await,
         Commands::Pairing { udid, app, export } =>
@@ -179,7 +195,6 @@ async fn cmd_devices() -> Result<(), CliError> {
         let conn_type = match dev.connection_type {
             Connection::Usb => "USB", Connection::Network(_) => "Red", Connection::Unknown(_) => "?",
         };
-        // FIX: to_provider toma 2 args: (addr, label: impl Into<String>)
         let provider = dev.to_provider(addr.clone(), "iloader");
         let (name, ver) = lockdown_info(&provider).await;
         println!("  📱 {name}  (iOS {ver})\n     UDID: {}\n     Tipo: {conn_type}\n", dev.udid);
@@ -199,6 +214,46 @@ async fn cmd_install(apple_id: &str, password: &str, udid: Option<&str>,
         .map_err(|e| CliError::Sideload(e.to_string()))?;
     if ipa.starts_with("http") { let _ = tokio::fs::remove_file(&ipa_path).await; }
     println!("✅ Instalado.\n   Ajustes → General → VPN y gestión de dispositivos → Confiar");
+    Ok(())
+}
+
+/// Instalación por red — usada desde iSH sin USB, vía LocalDevVPN (10.7.0.1
+/// por defecto) y el .mobiledevicepairing ya exportado con
+/// `iloader pairing --export`.
+async fn cmd_install_network(
+    apple_id: &str,
+    password: &str,
+    host: &str,
+    pairing_file: Option<PathBuf>,
+    ipa: &str,
+    anisette_url: &str,
+    data_dir: &PathBuf,
+) -> Result<(), CliError> {
+    let ip: IpAddr = host.parse()
+        .map_err(|e| CliError::Network(format!("IP inválida '{host}': {e}")))?;
+
+    let pairing_path = pairing_file.ok_or_else(|| CliError::Network(
+        "Falta --pairing-file. Genera uno antes con:\n   iloader pairing --export archivo.mobiledevicepairing".into()
+    ))?;
+
+    println!("🔑 Cargando pairing file: {}", pairing_path.display());
+    let rp_pairing = network_transport::load_saved_pairing(&pairing_path)
+        .map_err(|e| CliError::Network(format!("No se pudo cargar el pairing file: {e}")))?;
+
+    println!("🌐 Conectando a {ip} (LocalDevVPN)…");
+    let handshake = network_transport::connect_over_network(ip, &rp_pairing).await
+        .map_err(|e| CliError::Network(format!("Fallo en el túnel RSD: {e}")))?;
+    println!("✅ Túnel RSD establecido ({} servicios)", handshake.services.len());
+
+    let provider = network_transport::RsdProvider::new(handshake);
+
+    let ipa_path = resolve_ipa(ipa).await?;
+    let mut sideloader = authenticate(apple_id, password, anisette_url, data_dir).await?;
+    println!("📦 Instalando {} por red…", ipa_path.display());
+    sideloader.install_app(&provider, ipa_path.clone(), false).await
+        .map_err(|e| CliError::Sideload(e.to_string()))?;
+    if ipa.starts_with("http") { let _ = tokio::fs::remove_file(&ipa_path).await; }
+    println!("✅ Instalado por red.\n   Ajustes → General → VPN y gestión de dispositivos → Confiar");
     Ok(())
 }
 
@@ -285,13 +340,11 @@ async fn cmd_app_ids(apple_id: &str, password: &str, anisette_url: &str, data_di
     let resp = sideloader.get_dev_session()
         .list_app_ids(&team, None).await
         .map_err(|e| CliError::Auth(e.to_string()))?;
-    // max_quantity es Option<u64>, available_quantity es Option<i64>
     println!("App IDs ({} registrados, max: {}, disponibles: {}):\n",
         resp.app_ids.len(),
         resp.max_quantity.map_or("?".to_string(), |v| v.to_string()),
         resp.available_quantity.map_or("?".to_string(), |v| v.to_string()));
     for app in &resp.app_ids {
-        // FIX: app.name es String, no Option<String> → no usar as_deref()
         println!("  {}  —  {}", app.identifier, app.name);
     }
     Ok(())
@@ -363,8 +416,6 @@ fn make_storage(data_dir: &PathBuf) -> Box<dyn SideloadingStorage> {
 // ─── Device ───────────────────────────────────────────────────────────────────
 
 async fn usbmuxd_conn() -> Result<UsbmuxdConnection, CliError> {
-    // Intentar primero con el socket que exista en el sistema
-    // Alpine/musl puede tener el socket en /run/usbmuxd o /var/run/usbmuxd
     let sockets = ["/var/run/usbmuxd", "/run/usbmuxd", "/tmp/usbmuxd"];
     for path in &sockets {
         if std::path::Path::new(path).exists() {
@@ -425,7 +476,6 @@ async fn select_device(udid: Option<&str>)
         devs.into_iter().next().unwrap()
     };
     let udid_str = dev.udid.clone();
-    // FIX: to_provider(addr, label) — 2 argumentos, label es el segundo
     let provider = dev.to_provider(usbmuxd_addr()?, "iloader");
     Ok((provider, udid_str))
 }
@@ -434,7 +484,6 @@ async fn lockdown_info(provider: &idevice::provider::UsbmuxdProvider) -> (String
     let Ok(mut lc) = LockdownClient::connect(provider).await else {
         return ("Desconocido".into(), "?".into());
     };
-    // FIX: get_value(domain: Option<&str>, key: Option<&str>) — 2 argumentos
     let name = lc.get_value(Some("DeviceName"), None).await
         .ok().and_then(|v| v.as_string().map(|s| s.to_string()))
         .unwrap_or_else(|| "Desconocido".into());
@@ -499,7 +548,6 @@ async fn generate_pairing_bytes(udid: &str) -> Result<Vec<u8>, CliError> {
     .map_err(|e| CliError::Usbmuxd(e.to_string()))?;
     let dev = devs.into_iter().find(|d| d.udid == udid)
         .ok_or_else(|| CliError::DeviceNotFound(udid.to_string()))?;
-    // FIX: to_provider(addr, label) — 2 argumentos
     let provider = dev.to_provider(usbmuxd_addr()?, "iloader");
 
     let mut lc = LockdownClient::connect(&provider).await
@@ -511,7 +559,6 @@ async fn generate_pairing_bytes(udid: &str) -> Result<Vec<u8>, CliError> {
         Some("com.apple.mobile.wireless_lockdown"),
     ).await;
 
-    // FIX: get_value(domain, key) — 2 argumentos
     let ver_str = lc.get_value(Some("ProductVersion"), None).await
         .ok().and_then(|v| v.as_string().map(|s| s.to_string()))
         .unwrap_or_default();
@@ -558,8 +605,6 @@ async fn generate_rppairing(provider: &impl IdeviceProvider, hostname: &str)
     let proxy = CoreDeviceProxy::connect(provider).await?;
     let rsd_port = proxy.tunnel_info().server_rsd_port;
 
-    // create_software_tunnel(self) consume proxy → Adapter
-    // to_async_handle() → AdapterHandle (tiene connect() público)
     let adapter = proxy.create_software_tunnel()?;
     let mut handle = adapter.to_async_handle();
 
@@ -578,7 +623,6 @@ async fn generate_rppairing(provider: &impl IdeviceProvider, hostname: &str)
 
     let mut pairing_file = RpPairingFile::generate(hostname);
 
-    // Dos conexiones: primera inicia el pairing, segunda lo confirma en keychain
     for _ in 0..2 {
         let stream = handle.connect(tunnel_port).await
             .map_err(|e| idevice::IdeviceError::InternalError(e.to_string()))?;
