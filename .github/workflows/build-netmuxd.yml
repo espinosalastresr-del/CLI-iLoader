@@ -1,0 +1,57 @@
+name: Build netmuxd (i686-musl para iSH)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-netmuxd.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar netmuxd (jkcoxson)
+        uses: actions/checkout@v4
+        with:
+          repository: jkcoxson/netmuxd
+          path: netmuxd
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            netmuxd/target
+          key: ${{ runner.os }}-netmuxd-musl-i686-${{ hashFiles('netmuxd/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-netmuxd-musl-i686-
+
+      - name: Instalar Rust + target i686-musl
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-unknown-linux-musl
+
+      - name: Instalar cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Compilar netmuxd para i686-musl
+        working-directory: netmuxd
+        run: cross build --release --target i686-unknown-linux-musl
+
+      - name: Preparar binario
+        run: |
+          mkdir -p dist
+          cp netmuxd/target/i686-unknown-linux-musl/release/netmuxd dist/netmuxd-linux-i686
+          chmod +x dist/netmuxd-linux-i686
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: netmuxd-linux-i686
+          path: dist/netmuxd-linux-i686
+          retention-days: 14
