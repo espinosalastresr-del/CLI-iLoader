@@ -1,0 +1,53 @@
+name: Build iloader (Alpine/musl - iSH i686)
+
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-musl-i686-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-musl-i686-
+
+      # iSH: kernel Linux 4.20.69-ish, arch i686, APK arch x86, Alpine 3.14.3.
+      - name: Instalar Rust + target i686-musl
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-unknown-linux-musl
+
+      - name: Instalar cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Compilar para i686-musl
+        run: cross build --release --target i686-unknown-linux-musl
+
+      - name: Preparar binario
+        run: |
+          mkdir -p dist
+          cp target/i686-unknown-linux-musl/release/iloader dist/iloader-linux-i686
+          chmod +x dist/iloader-linux-i686
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: iloader-linux-i686
+          path: dist/iloader-linux-i686
+          retention-days: 14
