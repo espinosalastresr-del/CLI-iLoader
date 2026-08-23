@@ -1,10 +1,8 @@
 //! iloader CLI — instala IPAs en iPhone desde Alpine Linux (musl)
 
-mod network_transport;
 
 use std::{
     io::{self, Write},
-    net::IpAddr,
     path::PathBuf,
 };
 
@@ -59,14 +57,6 @@ enum Commands {
         #[arg(short, long, env = "ILOADER_APPLE_PASSWORD")] password: String,
         #[arg(short, long)] udid: Option<String>,
         #[arg(value_name = "IPA")] ipa: String,
-        /// IP del dispositivo por red (ej: 10.7.0.1 vía LocalDevVPN en iSH).
-        /// Si se especifica, ignora usbmuxd y usa el pairing file exportado.
-        #[arg(long)]
-        host: Option<String>,
-        /// Ruta al .mobiledevicepairing exportado con `iloader pairing --export`.
-        /// Requerido si se usa --host.
-        #[arg(long)]
-        pairing_file: Option<PathBuf>,
     },
     /// Descargar e instalar SideStore
     InstallSidestore {
@@ -115,7 +105,6 @@ enum CliError {
     #[error("Sideloading: {0}")]     Sideload(String),
     #[error("Pairing: {0}")]         Pairing(String),
     #[error("Descarga: {0}")]        Download(String),
-    #[error("Red: {0}")]             Network(String),
     #[error("E/S: {0}")]             Io(#[from] io::Error),
     #[error("{0}")]                  Other(String),
 }
@@ -149,13 +138,8 @@ async fn main() {
 
     let result = match cli.command {
         Commands::Devices => cmd_devices().await,
-        Commands::Install { apple_id, password, udid, ipa, host, pairing_file } => {
-            if let Some(host) = host {
-                cmd_install_network(&apple_id, &password, &host, pairing_file, &ipa, &anisette_url, &data_dir).await
-            } else {
-                cmd_install(&apple_id, &password, udid.as_deref(), &ipa, &anisette_url, &data_dir).await
-            }
-        }
+        Commands::Install { apple_id, password, udid, ipa } =>
+            cmd_install(&apple_id, &password, udid.as_deref(), &ipa, &anisette_url, &data_dir).await,
         Commands::InstallSidestore { apple_id, password, udid, nightly, live_container } =>
             cmd_install_sidestore(&apple_id, &password, udid.as_deref(), nightly, live_container, &anisette_url, &data_dir).await,
         Commands::Pairing { udid, app, export } =>
@@ -214,46 +198,6 @@ async fn cmd_install(apple_id: &str, password: &str, udid: Option<&str>,
         .map_err(|e| CliError::Sideload(e.to_string()))?;
     if ipa.starts_with("http") { let _ = tokio::fs::remove_file(&ipa_path).await; }
     println!("✅ Instalado.\n   Ajustes → General → VPN y gestión de dispositivos → Confiar");
-    Ok(())
-}
-
-/// Instalación por red — usada desde iSH sin USB, vía LocalDevVPN (10.7.0.1
-/// por defecto) y el .mobiledevicepairing ya exportado con
-/// `iloader pairing --export`.
-async fn cmd_install_network(
-    apple_id: &str,
-    password: &str,
-    host: &str,
-    pairing_file: Option<PathBuf>,
-    ipa: &str,
-    anisette_url: &str,
-    data_dir: &PathBuf,
-) -> Result<(), CliError> {
-    let ip: IpAddr = host.parse()
-        .map_err(|e| CliError::Network(format!("IP inválida '{host}': {e}")))?;
-
-    let pairing_path = pairing_file.ok_or_else(|| CliError::Network(
-        "Falta --pairing-file. Genera uno antes con:\n   iloader pairing --export archivo.mobiledevicepairing".into()
-    ))?;
-
-    println!("🔑 Cargando pairing file: {}", pairing_path.display());
-    let (mut rp_pairing, lockdown_bytes) = network_transport::load_saved_pairing(&pairing_path)
-        .map_err(|e| CliError::Network(format!("No se pudo cargar el pairing file: {e}")))?;
-
-    println!("🌐 Conectando a {ip} (LocalDevVPN)…");
-    let handshake = network_transport::connect_over_network(ip, &mut rp_pairing).await
-        .map_err(|e| CliError::Network(format!("Fallo en el túnel RSD: {e}")))?;
-    println!("✅ Túnel RSD establecido ({} servicios)", handshake.services.len());
-
-    let provider = network_transport::RsdProvider::new(handshake, lockdown_bytes);
-
-    let ipa_path = resolve_ipa(ipa).await?;
-    let mut sideloader = authenticate(apple_id, password, anisette_url, data_dir).await?;
-    println!("📦 Instalando {} por red…", ipa_path.display());
-    sideloader.install_app(&provider, ipa_path.clone(), false).await
-        .map_err(|e| CliError::Sideload(e.to_string()))?;
-    if ipa.starts_with("http") { let _ = tokio::fs::remove_file(&ipa_path).await; }
-    println!("✅ Instalado por red.\n   Ajustes → General → VPN y gestión de dispositivos → Confiar");
     Ok(())
 }
 
