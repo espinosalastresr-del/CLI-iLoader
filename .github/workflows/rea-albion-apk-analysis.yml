@@ -104,6 +104,17 @@ jobs:
           set -e
           exit "$status"
 
+      - name: Comprehensive APK inventory and static string analysis
+        id: static_analysis
+        if: ${{ always() && steps.download.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/analyze_apk_static.py "$RUNNER_TEMP/albion-apk/Albion-Online.apk" "$RUNNER_TEMP/rea-reports"
+          # Hash the report files for reproducibility; do not hash or upload the APK itself here.
+          find "$RUNNER_TEMP/rea-reports" -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum \
+            > "$RUNNER_TEMP/rea-reports/report-sha256-manifest.txt"
+
       - name: Inspect Unity IL2CPP metadata
         id: il2cpp
         if: ${{ always() && steps.download.outcome == 'success' }}
