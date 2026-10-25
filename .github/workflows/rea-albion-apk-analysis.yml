@@ -15,7 +15,7 @@ permissions:
 jobs:
   analyze-apk:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       REA_VERSION: "6.7.0"
       REA_JADX_SHA256: "6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75"
@@ -28,19 +28,24 @@ jobs:
         with:
           node-version: "24.22.1"
 
+      - uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5 # v4.3.1
+        with:
+          dotnet-version: "6.0.x"
+
       - name: Install Java and archive tools
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends openjdk-21-jdk-headless unzip file
+          sudo apt-get install --yes --no-install-recommends openjdk-21-jdk-headless unzip file binutils apktool p7zip-full
           java --version
+          dotnet --info
 
       - name: Prepare isolated workspace
         id: dirs
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/albion-apk" "$RUNNER_TEMP/rea-android" "$RUNNER_TEMP/rea-reports"
+          mkdir -p "$RUNNER_TEMP/albion-apk" "$RUNNER_TEMP/rea-android" "$RUNNER_TEMP/rea-reports" "$RUNNER_TEMP/rea-tools"
           echo "reports=$RUNNER_TEMP/rea-reports" >> "$GITHUB_OUTPUT"
 
       - name: Validate URL and download APK
@@ -93,6 +98,7 @@ jobs:
 
       - name: Inspect Android package with REA
         id: inspect
+        continue-on-error: true
         shell: bash
         run: |
           set +e
@@ -104,8 +110,21 @@ jobs:
           set -e
           exit "$status"
 
+      - name: Decode Android manifest and resources with Apktool
+        if: ${{ always() && steps.download.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          timeout 15m apktool d --force --no-src "$RUNNER_TEMP/albion-apk/Albion-Online.apk" -o "$RUNNER_TEMP/rea-reports/apktool-decoded" > "$RUNNER_TEMP/rea-reports/apktool.stdout.txt" 2> "$RUNNER_TEMP/rea-reports/apktool.stderr.txt"
+          status=$?
+          printf '%s\\n' "$status" > "$RUNNER_TEMP/rea-reports/apktool.exit-code.txt"
+          if [ -f "$RUNNER_TEMP/rea-reports/apktool-decoded/AndroidManifest.xml" ]; then cp "$RUNNER_TEMP/rea-reports/apktool-decoded/AndroidManifest.xml" "$RUNNER_TEMP/rea-reports/AndroidManifest-decoded.xml"; fi
+          exit "$status"
+
       - name: Comprehensive APK inventory and static string analysis
         id: static_analysis
+        continue-on-error: true
         if: ${{ always() && steps.download.outcome == 'success' }}
         shell: bash
         run: |
@@ -174,36 +193,120 @@ jobs:
           done
           set -e
 
-      - name: Collect archive inventory and fishing-related leads
+      - name: Extract IL2CPP binaries and metadata
         if: ${{ always() && steps.download.outcome == 'success' }}
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
-          python3 - "$RUNNER_TEMP/albion-apk/Albion-Online.apk" "$RUNNER_TEMP/rea-reports" <<'PY'
-          import json, pathlib, re, sys, zipfile, hashlib
-          apk, report = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
-          rows, candidates = [], []
-          keywords = re.compile(r"fish|fishing|rod|bait|catch|gather|inventory|item|market|silver|loot|resource", re.I)
+          python3 - "$RUNNER_TEMP/albion-apk/Albion-Online.apk" "$RUNNER_TEMP/rea-tools/il2cpp" "$RUNNER_TEMP/rea-reports" <<'PY'
+          import pathlib,sys,zipfile,json,re
+          apk,dest,report=map(pathlib.Path,sys.argv[1:]); dest.mkdir(parents=True,exist_ok=True)
+          targets={"assets/bin/Data/Managed/Metadata/global-metadata.dat":dest/"global-metadata.dat","lib/arm64-v8a/libil2cpp.so":dest/"libil2cpp-arm64.so","lib/arm64-v8a/libunity.so":dest/"libunity-arm64.so","lib/armeabi-v7a/libil2cpp.so":dest/"libil2cpp-armv7.so"}
+          result={}
           with zipfile.ZipFile(apk) as z:
-              infos = z.infolist()
-              if len(infos) > 250000:
-                  raise SystemExit("APK rejected: too many archive entries")
-              total = sum(max(0, i.file_size) for i in infos)
-              if total > 12 * 1024 * 1024 * 1024:
-                  raise SystemExit("APK rejected: expanded archive exceeds 12 GiB safety limit")
-              for i in infos:
-                  row = {"path": i.filename, "size": i.file_size, "compressed_size": i.compress_size}
-                  rows.append(row)
-                  if keywords.search(i.filename):
-                      candidates.append(row)
-          (report / "apk-files.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
-          (report / "apk-files.txt").write_text("\\n".join(r["path"] for r in rows) + "\n", encoding="utf-8")
-          (report / "keyword-path-candidates.json").write_text(json.dumps(candidates, indent=2), encoding="utf-8")
-          (report / "apk-framework-hints.txt").write_text("\\n".join(
-              f"{r['path']} ({r['size']} bytes)" for r in rows
-              if any(x in r["path"].lower() for x in ("libunity.so", "libil2cpp.so", "global-metadata.dat",
-                  "libflutter.so", "libhermes.so", "classes.dex", "assets/bin/data"))
-          ) + "\\n", encoding="utf-8")
+            for name,out in targets.items():
+              try: info=z.getinfo(name)
+              except KeyError: result[name]={"found":False}; continue
+              if info.file_size>600*1024*1024: result[name]={"found":True,"error":"safety limit","size":info.file_size}; continue
+              with z.open(info) as src,out.open("wb") as dst:
+                while True:
+                  b=src.read(1024*1024)
+                  if not b: break
+                  dst.write(b)
+              result[name]={"found":True,"size":info.file_size}
+          (report/"il2cpp-extraction.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
+          meta=targets["assets/bin/Data/Managed/Metadata/global-metadata.dat"]
+          if meta.exists():
+            data=meta.read_bytes()
+            (report/"il2cpp-metadata-header.txt").write_text("bytes=%d\\nmagic_le=0x%08x\\nversion_le=%d\\n"%(len(data),int.from_bytes(data[:4],"little"),int.from_bytes(data[4:8],"little")),encoding="utf-8")
+            strings=[m.group().decode("ascii","replace") for m in re.finditer(rb"[\\x20-\\x7e]{4,}",data)]
+            strings += [m.group().decode("utf-16le","replace") for m in re.finditer(rb"(?:[\\x20-\\x7e]\\x00){4,}",data)]
+            strings=list(dict.fromkeys(strings))
+            (report/"il2cpp-metadata-strings.txt").write_text("\\n".join(strings)+"\\n",encoding="utf-8")
+            pat=re.compile(r"fish|rod|bait|gather|inventory|market|silver|loot|resource|network|socket|http|login|guild|craft|trade|auction|item",re.I)
+            (report/"il2cpp-keyword-hits.txt").write_text("\\n".join(s for s in strings if pat.search(s))+"\\n",encoding="utf-8")
+          PY
+
+      - name: Reconstruct managed assemblies with Cpp2IL
+        if: ${{ always() && steps.download.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$RUNNER_TEMP/rea-reports/cpp2il"
+          curl --fail --location --silent --show-error --retry 3 "https://github.com/SamboyCoding/Cpp2IL/releases/download/2022.0.7/Cpp2IL-2022.0.7-Linux" -o "$RUNNER_TEMP/rea-tools/Cpp2IL"
+          status=$?
+          if [ "$status" -eq 0 ]; then
+            chmod +x "$RUNNER_TEMP/rea-tools/Cpp2IL"
+            timeout 30m "$RUNNER_TEMP/rea-tools/Cpp2IL" --game-path="$RUNNER_TEMP/albion-apk/Albion-Online.apk" --output-to="$RUNNER_TEMP/rea-reports/cpp2il" --verbose > "$RUNNER_TEMP/rea-reports/cpp2il.stdout.txt" 2> "$RUNNER_TEMP/rea-reports/cpp2il.stderr.txt"
+            status=$?
+          fi
+          printf '%s\\n' "$status" > "$RUNNER_TEMP/rea-reports/cpp2il.exit-code.txt"
+          find "$RUNNER_TEMP/rea-reports/cpp2il" -type f -printf '%P\\t%s bytes\\n' | sort > "$RUNNER_TEMP/rea-reports/cpp2il-output-index.txt"
+          exit "$status"
+
+      - name: Reconstruct metadata with Il2CppDumper
+        if: ${{ always() && steps.download.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$RUNNER_TEMP/rea-tools/Il2CppDumper" "$RUNNER_TEMP/rea-reports/il2cppdumper"
+          curl --fail --location --silent --show-error --retry 3 "https://github.com/Perfare/Il2CppDumper/releases/download/v6.7.46/Il2CppDumper-net6-v6.7.46.zip" -o "$RUNNER_TEMP/rea-tools/Il2CppDumper.zip"
+          status=$?
+          if [ "$status" -eq 0 ]; then
+            unzip -oq "$RUNNER_TEMP/rea-tools/Il2CppDumper.zip" -d "$RUNNER_TEMP/rea-tools/Il2CppDumper"
+            exe="$(find "$RUNNER_TEMP/rea-tools/Il2CppDumper" -name Il2CppDumper.dll -print -quit)"
+            bin="$RUNNER_TEMP/rea-tools/il2cpp/libil2cpp-arm64.so"; meta="$RUNNER_TEMP/rea-tools/il2cpp/global-metadata.dat"
+            if [ -n "$exe" ] && [ -s "$bin" ] && [ -s "$meta" ]; then
+              timeout 25m dotnet "$exe" "$bin" "$meta" "$RUNNER_TEMP/rea-reports/il2cppdumper" > "$RUNNER_TEMP/rea-reports/il2cppdumper.stdout.txt" 2> "$RUNNER_TEMP/rea-reports/il2cppdumper.stderr.txt"
+              status=$?
+            else
+              echo "Il2CppDumper DLL, ARM64 libil2cpp or metadata missing" > "$RUNNER_TEMP/rea-reports/il2cppdumper.stderr.txt"; status=2
+            fi
+          fi
+          printf '%s\\n' "$status" > "$RUNNER_TEMP/rea-reports/il2cppdumper.exit-code.txt"
+          find "$RUNNER_TEMP/rea-reports/il2cppdumper" -type f -printf '%P\\t%s bytes\\n' | sort > "$RUNNER_TEMP/rea-reports/il2cppdumper-output-index.txt"
+          exit "$status"
+
+      - name: Inspect native ELF libraries and extract strings
+        if: ${{ always() && steps.download.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$RUNNER_TEMP/rea-tools/il2cpp"; out="$RUNNER_TEMP/rea-reports/native"; mkdir -p "$out"
+          for lib in "$base"/*.so; do
+            [ -f "$lib" ] || continue
+            name="$(basename "$lib")"
+            readelf -h "$lib" > "$out/$name.elf-header.txt" 2>&1 || true
+            readelf -d "$lib" > "$out/$name.dynamic.txt" 2>&1 || true
+            readelf -Ws "$lib" > "$out/$name.symbols.txt" 2>&1 || true
+            strings -a -n 5 "$lib" > "$out/$name.strings-ascii.txt" 2>&1 || true
+            strings -a -el -n 4 "$lib" > "$out/$name.strings-utf16le.txt" 2>&1 || true
+          done
+          grep -Eai 'https?://|wss?://|api|socket|network|login|market|inventory|item|silver|resource|guild|craft|trade|fish|fishing' "$out"/*.strings-*.txt > "$RUNNER_TEMP/rea-reports/native-keyword-hits.txt" || true
+
+      - name: Generate tool status report and report hashes
+        if: ${{ always() && steps.download.outcome == 'success' }}
+        shell: bash
+        run: |
+          python3 - "$RUNNER_TEMP/rea-reports" <<'PY'
+          import pathlib,sys,json,hashlib
+          root=pathlib.Path(sys.argv[1]); names=["rea-android-package.exit-code.txt","apktool.exit-code.txt","cpp2il.exit-code.txt","il2cppdumper.exit-code.txt"]
+          rows=[]
+          for name in names:
+            p=root/name; rows.append({"stage":name.removesuffix(".exit-code.txt"),"status":p.read_text().strip() if p.exists() else "not-run"})
+          data={"tools":rows,"coverage":["APK hashes/integrity and full inventory","Android manifest/resources decoding","Unity IL2CPP metadata and native binary extraction","Cpp2IL managed assembly reconstruction attempt","Il2CppDumper metadata/dummy DLL/Ghidra scripts attempt","ELF headers, dynamic sections, symbols and native strings"],"limitations":["Tools may not support this Unity metadata version or protections","Recovered output is not original source code","String indicators are leads, not proof of active endpoints","No APK execution or endpoint probing","Server-side game logic is not in the client APK"]}
+          (root/"analysis-coverage.json").write_text(json.dumps(data,indent=2),encoding="utf-8")
+          (root/"analysis-coverage.md").write_text("# Coverage report\\n\\n"+"\\n".join("- "+r["stage"]+": "+r["status"] for r in rows)+"\\n\\n## Limitations\\n"+"\\n".join("- "+x for x in data["limitations"])+"\\n",encoding="utf-8")
+          lines=[]
+          for p in sorted(root.rglob("*")):
+            if p.is_file() and p.name!="report-sha256-manifest.txt":
+              try: lines.append(hashlib.sha256(p.read_bytes()).hexdigest()+"  "+str(p.relative_to(root)))
+              except OSError as e: lines.append("ERROR "+str(p.relative_to(root))+": "+str(e))
+          (root/"report-sha256-manifest.txt").write_text("\\n".join(lines)+"\\n",encoding="utf-8")
           PY
 
       - name: Upload reports (not the original APK)
@@ -213,4 +316,4 @@ jobs:
           name: rea-albion-android-analysis
           path: ${{ steps.dirs.outputs.reports }}/
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 14
