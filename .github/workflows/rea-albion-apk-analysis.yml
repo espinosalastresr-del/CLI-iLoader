@@ -118,7 +118,7 @@ jobs:
           set +e
           timeout 15m apktool d --force --no-src "$RUNNER_TEMP/albion-apk/Albion-Online.apk" -o "$RUNNER_TEMP/rea-reports/apktool-decoded" > "$RUNNER_TEMP/rea-reports/apktool.stdout.txt" 2> "$RUNNER_TEMP/rea-reports/apktool.stderr.txt"
           status=$?
-          printf '%s\\n' "$status" > "$RUNNER_TEMP/rea-reports/apktool.exit-code.txt"
+          printf '%s\n' "$status" > "$RUNNER_TEMP/rea-reports/apktool.exit-code.txt"
           if [ -f "$RUNNER_TEMP/rea-reports/apktool-decoded/AndroidManifest.xml" ]; then cp "$RUNNER_TEMP/rea-reports/apktool-decoded/AndroidManifest.xml" "$RUNNER_TEMP/rea-reports/AndroidManifest-decoded.xml"; fi
           exit "$status"
 
@@ -219,13 +219,13 @@ jobs:
           meta=targets["assets/bin/Data/Managed/Metadata/global-metadata.dat"]
           if meta.exists():
             data=meta.read_bytes()
-            (report/"il2cpp-metadata-header.txt").write_text("bytes=%d\\nmagic_le=0x%08x\\nversion_le=%d\\n"%(len(data),int.from_bytes(data[:4],"little"),int.from_bytes(data[4:8],"little")),encoding="utf-8")
-            strings=[m.group().decode("ascii","replace") for m in re.finditer(rb"[\\x20-\\x7e]{4,}",data)]
-            strings += [m.group().decode("utf-16le","replace") for m in re.finditer(rb"(?:[\\x20-\\x7e]\\x00){4,}",data)]
+            (report/"il2cpp-metadata-header.txt").write_text("bytes=%d\nmagic_le=0x%08x\nversion_le=%d\n"%(len(data),int.from_bytes(data[:4],"little"),int.from_bytes(data[4:8],"little")),encoding="utf-8")
+            strings=[m.group().decode("ascii","replace") for m in re.finditer(rb"[\x20-\x7e]{4,}",data)]
+            strings += [m.group().decode("utf-16le","replace") for m in re.finditer(rb"(?:[\x20-\x7e]\x00){4,}",data)]
             strings=list(dict.fromkeys(strings))
-            (report/"il2cpp-metadata-strings.txt").write_text("\\n".join(strings)+"\\n",encoding="utf-8")
+            (report/"il2cpp-metadata-strings.txt").write_text("\n".join(strings)+"\n",encoding="utf-8")
             pat=re.compile(r"fish|rod|bait|gather|inventory|market|silver|loot|resource|network|socket|http|login|guild|craft|trade|auction|item",re.I)
-            (report/"il2cpp-keyword-hits.txt").write_text("\\n".join(s for s in strings if pat.search(s))+"\\n",encoding="utf-8")
+            (report/"il2cpp-keyword-hits.txt").write_text("\n".join(s for s in strings if pat.search(s))+"\n",encoding="utf-8")
           PY
 
       - name: Reconstruct managed assemblies with Cpp2IL
@@ -242,8 +242,8 @@ jobs:
             timeout 30m "$RUNNER_TEMP/rea-tools/Cpp2IL" --game-path="$RUNNER_TEMP/albion-apk/Albion-Online.apk" --output-to="$RUNNER_TEMP/rea-reports/cpp2il" --verbose > "$RUNNER_TEMP/rea-reports/cpp2il.stdout.txt" 2> "$RUNNER_TEMP/rea-reports/cpp2il.stderr.txt"
             status=$?
           fi
-          printf '%s\\n' "$status" > "$RUNNER_TEMP/rea-reports/cpp2il.exit-code.txt"
-          find "$RUNNER_TEMP/rea-reports/cpp2il" -type f -printf '%P\\t%s bytes\\n' | sort > "$RUNNER_TEMP/rea-reports/cpp2il-output-index.txt"
+          printf '%s\n' "$status" > "$RUNNER_TEMP/rea-reports/cpp2il.exit-code.txt"
+          find "$RUNNER_TEMP/rea-reports/cpp2il" -type f -printf '%P\t%s bytes\n' | sort > "$RUNNER_TEMP/rea-reports/cpp2il-output-index.txt"
           exit "$status"
 
       - name: Reconstruct metadata with Il2CppDumper
@@ -266,8 +266,8 @@ jobs:
               echo "Il2CppDumper DLL, ARM64 libil2cpp or metadata missing" > "$RUNNER_TEMP/rea-reports/il2cppdumper.stderr.txt"; status=2
             fi
           fi
-          printf '%s\\n' "$status" > "$RUNNER_TEMP/rea-reports/il2cppdumper.exit-code.txt"
-          find "$RUNNER_TEMP/rea-reports/il2cppdumper" -type f -printf '%P\\t%s bytes\\n' | sort > "$RUNNER_TEMP/rea-reports/il2cppdumper-output-index.txt"
+          printf '%s\n' "$status" > "$RUNNER_TEMP/rea-reports/il2cppdumper.exit-code.txt"
+          find "$RUNNER_TEMP/rea-reports/il2cppdumper" -type f -printf '%P\t%s bytes\n' | sort > "$RUNNER_TEMP/rea-reports/il2cppdumper-output-index.txt"
           exit "$status"
 
       - name: Inspect native ELF libraries and extract strings
@@ -300,13 +300,13 @@ jobs:
             p=root/name; rows.append({"stage":name.removesuffix(".exit-code.txt"),"status":p.read_text().strip() if p.exists() else "not-run"})
           data={"tools":rows,"coverage":["APK hashes/integrity and full inventory","Android manifest/resources decoding","Unity IL2CPP metadata and native binary extraction","Cpp2IL managed assembly reconstruction attempt","Il2CppDumper metadata/dummy DLL/Ghidra scripts attempt","ELF headers, dynamic sections, symbols and native strings"],"limitations":["Tools may not support this Unity metadata version or protections","Recovered output is not original source code","String indicators are leads, not proof of active endpoints","No APK execution or endpoint probing","Server-side game logic is not in the client APK"]}
           (root/"analysis-coverage.json").write_text(json.dumps(data,indent=2),encoding="utf-8")
-          (root/"analysis-coverage.md").write_text("# Coverage report\\n\\n"+"\\n".join("- "+r["stage"]+": "+r["status"] for r in rows)+"\\n\\n## Limitations\\n"+"\\n".join("- "+x for x in data["limitations"])+"\\n",encoding="utf-8")
+          (root/"analysis-coverage.md").write_text("# Coverage report\n\n"+"\n".join("- "+r["stage"]+": "+r["status"] for r in rows)+"\n\n## Limitations\n"+"\n".join("- "+x for x in data["limitations"])+"\n",encoding="utf-8")
           lines=[]
           for p in sorted(root.rglob("*")):
             if p.is_file() and p.name!="report-sha256-manifest.txt":
               try: lines.append(hashlib.sha256(p.read_bytes()).hexdigest()+"  "+str(p.relative_to(root)))
               except OSError as e: lines.append("ERROR "+str(p.relative_to(root))+": "+str(e))
-          (root/"report-sha256-manifest.txt").write_text("\\n".join(lines)+"\\n",encoding="utf-8")
+          (root/"report-sha256-manifest.txt").write_text("\n".join(lines)+"\n",encoding="utf-8")
           PY
 
       - name: Upload reports (not the original APK)
