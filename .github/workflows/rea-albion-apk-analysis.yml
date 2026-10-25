@@ -122,6 +122,18 @@ jobs:
           if [ -f "$RUNNER_TEMP/rea-reports/apktool-decoded/AndroidManifest.xml" ]; then cp "$RUNNER_TEMP/rea-reports/apktool-decoded/AndroidManifest.xml" "$RUNNER_TEMP/rea-reports/AndroidManifest-decoded.xml"; fi
           exit "$status"
 
+      - name: Inventory Unity GameData blobs and regional variants
+        id: game_data
+        if: ${{ always() && steps.download.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          python3 scripts/analyze_game_data.py "$RUNNER_TEMP/rea-reports/apktool-decoded/assets/GameData" "$RUNNER_TEMP/rea-reports"
+          status=$?
+          printf '%s\\n' "$status" > "$RUNNER_TEMP/rea-reports/game-data-analysis.exit-code.txt"
+          exit "$status"
+
       - name: Comprehensive APK inventory and static string analysis
         id: static_analysis
         continue-on-error: true
@@ -239,7 +251,7 @@ jobs:
           status=$?
           if [ "$status" -eq 0 ]; then
             chmod +x "$RUNNER_TEMP/rea-tools/Cpp2IL"
-            timeout 30m "$RUNNER_TEMP/rea-tools/Cpp2IL" --game-path="$RUNNER_TEMP/albion-apk/Albion-Online.apk" --output-to="$RUNNER_TEMP/rea-reports/cpp2il" --verbose > "$RUNNER_TEMP/rea-reports/cpp2il.stdout.txt" 2> "$RUNNER_TEMP/rea-reports/cpp2il.stderr.txt"
+            timeout 30m "$RUNNER_TEMP/rea-tools/Cpp2IL" --game-path="$RUNNER_TEMP/albion-apk/Albion-Online.apk" --output-root="$RUNNER_TEMP/rea-reports/cpp2il" --verbose > "$RUNNER_TEMP/rea-reports/cpp2il.stdout.txt" 2> "$RUNNER_TEMP/rea-reports/cpp2il.stderr.txt"
             status=$?
           fi
           printf '%s\n' "$status" > "$RUNNER_TEMP/rea-reports/cpp2il.exit-code.txt"
@@ -260,7 +272,9 @@ jobs:
             exe="$(find "$RUNNER_TEMP/rea-tools/Il2CppDumper" -name Il2CppDumper.dll -print -quit)"
             bin="$RUNNER_TEMP/rea-tools/il2cpp/libil2cpp-arm64.so"; meta="$RUNNER_TEMP/rea-tools/il2cpp/global-metadata.dat"
             if [ -n "$exe" ] && [ -s "$bin" ] && [ -s "$meta" ]; then
-              timeout 25m dotnet "$exe" "$bin" "$meta" "$RUNNER_TEMP/rea-reports/il2cppdumper" > "$RUNNER_TEMP/rea-reports/il2cppdumper.stdout.txt" 2> "$RUNNER_TEMP/rea-reports/il2cppdumper.stderr.txt"
+              # Il2CppDumper may call Console.ReadKey on failure; a PTY prevents the
+              # redirected-stdin crash from hiding the actual metadata/tool error.
+              timeout 25m script -q -e -c "dotnet \"$exe\" \"$bin\" \"$meta\" \"$RUNNER_TEMP/rea-reports/il2cppdumper\"" /dev/null < /dev/null > "$RUNNER_TEMP/rea-reports/il2cppdumper.stdout.txt" 2> "$RUNNER_TEMP/rea-reports/il2cppdumper.stderr.txt"
               status=$?
             else
               echo "Il2CppDumper DLL, ARM64 libil2cpp or metadata missing" > "$RUNNER_TEMP/rea-reports/il2cppdumper.stderr.txt"; status=2
@@ -298,7 +312,9 @@ jobs:
           rows=[]
           for name in names:
             p=root/name; rows.append({"stage":name.removesuffix(".exit-code.txt"),"status":p.read_text().strip() if p.exists() else "not-run"})
-          data={"tools":rows,"coverage":["APK hashes/integrity and full inventory","Android manifest/resources decoding","Unity IL2CPP metadata and native binary extraction","Cpp2IL managed assembly reconstruction attempt","Il2CppDumper metadata/dummy DLL/Ghidra scripts attempt","ELF headers, dynamic sections, symbols and native strings"],"limitations":["Tools may not support this Unity metadata version or protections","Recovered output is not original source code","String indicators are leads, not proof of active endpoints","No APK execution or endpoint probing","Server-side game logic is not in the client APK"]}
+          names.append("game-data-analysis.exit-code.txt")
+          rows.append({"stage":"unity-game-data-inventory","status":(root/"game-data-analysis.exit-code.txt").read_text().strip() if (root/"game-data-analysis.exit-code.txt").exists() else "not-run"})
+          data={"tools":rows,"coverage":["APK hashes/integrity and full inventory","Android manifest/resources decoding","Unity GameData inventory, hashes, entropy, repeated prefixes, printable strings and regional variants","Unity IL2CPP metadata and native binary extraction","Cpp2IL managed assembly reconstruction attempt","Il2CppDumper metadata/dummy DLL/Ghidra scripts attempt","ELF headers, dynamic sections, symbols and native strings"],"limitations":["Tools may not support this Unity metadata version or protections","Repeated binary prefixes/high entropy do not by themselves prove encryption","Recovered output is not original source code","String indicators are leads, not proof of active endpoints","No APK execution or endpoint probing","Server-side game logic is not in the client APK"]}
           (root/"analysis-coverage.json").write_text(json.dumps(data,indent=2),encoding="utf-8")
           (root/"analysis-coverage.md").write_text("# Coverage report\n\n"+"\n".join("- "+r["stage"]+": "+r["status"] for r in rows)+"\n\n## Limitations\n"+"\n".join("- "+x for x in data["limitations"])+"\n",encoding="utf-8")
           lines=[]
