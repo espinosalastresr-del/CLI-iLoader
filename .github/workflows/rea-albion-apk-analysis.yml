@@ -104,6 +104,20 @@ jobs:
           set -e
           exit "$status"
 
+      - name: Search Android classes for gameplay-related names
+        if: ${{ always() && steps.download.outcome == 'success' }}
+        shell: bash
+        run: |
+          set +e
+          apk="$RUNNER_TEMP/albion-apk/Albion-Online.apk"
+          out="$RUNNER_TEMP/rea-reports"
+          for term in fish fishing gather inventory item market silver resource loot; do
+            rea search-android-classes "$apk" "$term" --json \
+              > "$out/classes-search-$term.json" 2> "$out/classes-search-$term.stderr"
+            printf '%s\n' "$?" > "$out/classes-search-$term.exit-code.txt"
+          done
+          set -e
+
       - name: Collect archive inventory and fishing-related leads
         if: ${{ always() && steps.download.outcome == 'success' }}
         shell: bash
