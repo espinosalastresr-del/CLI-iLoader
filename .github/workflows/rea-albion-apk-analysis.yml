@@ -131,7 +131,7 @@ jobs:
           set +e
           python3 scripts/analyze_game_data.py "$RUNNER_TEMP/rea-reports/apktool-decoded/assets/GameData" "$RUNNER_TEMP/rea-reports"
           status=$?
-          printf '%s\\n' "$status" > "$RUNNER_TEMP/rea-reports/game-data-analysis.exit-code.txt"
+          printf '%s\n' "$status" > "$RUNNER_TEMP/rea-reports/game-data-analysis.exit-code.txt"
           exit "$status"
 
       - name: Comprehensive APK inventory and static string analysis
@@ -274,7 +274,7 @@ jobs:
             if [ -n "$exe" ] && [ -s "$bin" ] && [ -s "$meta" ]; then
               # Il2CppDumper may call Console.ReadKey on failure; a PTY prevents the
               # redirected-stdin crash from hiding the actual metadata/tool error.
-              printf '\\n' | timeout 25m script -q -e -c "dotnet \"$exe\" \"$bin\" \"$meta\" \"$RUNNER_TEMP/rea-reports/il2cppdumper\"" /dev/null > "$RUNNER_TEMP/rea-reports/il2cppdumper.stdout.txt" 2> "$RUNNER_TEMP/rea-reports/il2cppdumper.stderr.txt"
+              printf '\n' | timeout 25m script -q -e -c "dotnet \"$exe\" \"$bin\" \"$meta\" \"$RUNNER_TEMP/rea-reports/il2cppdumper\"" /dev/null > "$RUNNER_TEMP/rea-reports/il2cppdumper.stdout.txt" 2> "$RUNNER_TEMP/rea-reports/il2cppdumper.stderr.txt"
               status=$?
             else
               echo "Il2CppDumper DLL, ARM64 libil2cpp or metadata missing" > "$RUNNER_TEMP/rea-reports/il2cppdumper.stderr.txt"; status=2
