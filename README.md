@@ -124,3 +124,11 @@ iloader install-sidestore
 4. O crea un tag: `git tag v0.1.0 && git push --tags` para generar un Release automático
 
 El binario resultante es **completamente estático** (musl), no requiere ninguna librería del sistema.
+
+---
+
+## Análisis estático de IPA con REA
+
+Se añadió un workflow aislado para descargar un IPA autorizado, generar evidencia con REA e inventariar dependencias y metadatos de Unity/IL2CPP. Está disponible en **Actions → REA IPA Analysis** después de configurar el secreto `IPA_URL`.
+
+Guía: [`docs/REA-IPA-ANALYSIS.md`](docs/REA-IPA-ANALYSIS.md). El workflow solo analiza estáticamente el paquete; no ejecuta la app ni garantiza recuperar código cifrado u ofuscado.
