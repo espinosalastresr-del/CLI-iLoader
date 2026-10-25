@@ -28,7 +28,7 @@ jobs:
         with:
           node-version: "24.22.1"
 
-      - uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5 # v4.3.1
+      - uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v4.3.1
         with:
           dotnet-version: "6.0.x"
 
