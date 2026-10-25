@@ -128,11 +128,11 @@ jobs:
         if: ${{ always() && steps.download.outcome == 'success' }}
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
           python3 scripts/analyze_apk_static.py "$RUNNER_TEMP/albion-apk/Albion-Online.apk" "$RUNNER_TEMP/rea-reports"
-          # Hash the report files for reproducibility; do not hash or upload the APK itself here.
-          find "$RUNNER_TEMP/rea-reports" -maxdepth 1 -type f ! -name "report-sha256-manifest.txt" -print0 | sort -z | xargs -0 sha256sum \
-            > "$RUNNER_TEMP/rea-reports/report-sha256-manifest.txt"
+          status=$?
+          printf '%s\n' "$status" > "$RUNNER_TEMP/rea-reports/static-analysis.exit-code.txt"
+          exit "$status"
 
       - name: Extract IL2CPP metadata and collect readable strings
         id: il2cpp
