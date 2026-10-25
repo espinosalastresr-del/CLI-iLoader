@@ -1,0 +1,160 @@
+name: REA Albion Android APK Analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: "HTTPS URL of an authorized APK (Albion Online URL prefilled)"
+        required: true
+        type: string
+        default: "https://live.albiononline.com/clients/20261015105018/Albion-Online.apk"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      REA_VERSION: "6.7.0"
+      REA_JADX_SHA256: "6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.22.1"
+
+      - name: Install Java and archive tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends openjdk-21-jdk-headless unzip file
+          java --version
+
+      - name: Prepare isolated workspace
+        id: dirs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/albion-apk" "$RUNNER_TEMP/rea-android" "$RUNNER_TEMP/rea-reports"
+          echo "reports=$RUNNER_TEMP/rea-reports" >> "$GITHUB_OUTPUT"
+
+      - name: Validate URL and download APK
+        id: download
+        shell: bash
+        env:
+          APK_URL: ${{ inputs.apk_url }}
+        run: |
+          set -euo pipefail
+          python3 - "$APK_URL" <<'PY'
+          import sys
+          from urllib.parse import urlparse
+          u = urlparse(sys.argv[1])
+          if u.scheme != "https" or u.hostname != "live.albiononline.com" or not u.path.endswith(".apk"):
+              raise SystemExit("Refusing URL: expected HTTPS on live.albiononline.com ending in .apk")
+          PY
+          curl --fail --location --silent --show-error --retry 4 --retry-all-errors \
+            --connect-timeout 30 --max-time 1800 "$APK_URL" \
+            --output "$RUNNER_TEMP/albion-apk/Albion-Online.apk"
+          test -s "$RUNNER_TEMP/albion-apk/Albion-Online.apk"
+          file "$RUNNER_TEMP/albion-apk/Albion-Online.apk" | tee "$RUNNER_TEMP/rea-reports/apk-file-type.txt"
+          sha256sum "$RUNNER_TEMP/albion-apk/Albion-Online.apk" | tee "$RUNNER_TEMP/rea-reports/apk-sha256.txt"
+          stat --printf='bytes=%s\n' "$RUNNER_TEMP/albion-apk/Albion-Online.apk" | tee "$RUNNER_TEMP/rea-reports/apk-size.txt"
+          python3 - "$RUNNER_TEMP/albion-apk/Albion-Online.apk" "$RUNNER_TEMP/rea-reports/apk-zip-integrity.txt" <<'PY'
+          import sys, zipfile
+          p, out = sys.argv[1:]
+          with zipfile.ZipFile(p) as z:
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f"Corrupt ZIP member: {bad}")
+              names = z.namelist()
+              if "AndroidManifest.xml" not in names:
+                  raise SystemExit("Archive has no root AndroidManifest.xml; not a standalone APK")
+              with open(out, "w", encoding="utf-8") as f:
+                  f.write(f"ZIP CRC checks passed; {len(names)} entries; AndroidManifest.xml present.\n")
+          PY
+
+      - name: Install pinned REA CLI and JADX engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/rea-tool" --no-audit --no-fund --save-exact "rea-agents@${REA_VERSION}"
+          echo "$RUNNER_TEMP/rea-tool/node_modules/.bin" >> "$GITHUB_PATH"
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://github.com/1013503897/jadx-headless-mcp/releases/download/v0.7.1/jadx-headless-mcp-0.7.1-all.jar" \
+            --output "$RUNNER_TEMP/rea-android/jadx-headless-mcp-0.7.1-all.jar"
+          echo "${REA_JADX_SHA256}  $RUNNER_TEMP/rea-android/jadx-headless-mcp-0.7.1-all.jar" | sha256sum --check -
+          echo "REA_JADX_MCP_JAR=$RUNNER_TEMP/rea-android/jadx-headless-mcp-0.7.1-all.jar" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
+
+      - name: Inspect Android package with REA
+        id: inspect
+        shell: bash
+        run: |
+          set +e
+          rea inspect-android-package "$RUNNER_TEMP/albion-apk/Albion-Online.apk" \
+            > "$RUNNER_TEMP/rea-reports/rea-android-package.json" \
+            2> "$RUNNER_TEMP/rea-reports/rea-android-package.stderr"
+          status=$?
+          printf '%s\n' "$status" > "$RUNNER_TEMP/rea-reports/rea-android-package.exit-code.txt"
+          set -e
+          exit "$status"
+
+      - name: Search Android classes for gameplay-related names
+        if: ${{ always() && steps.download.outcome == 'success' }}
+        shell: bash
+        run: |
+          set +e
+          apk="$RUNNER_TEMP/albion-apk/Albion-Online.apk"
+          out="$RUNNER_TEMP/rea-reports"
+          for term in fish fishing gather inventory item market silver resource loot; do
+            rea search-android-classes "$apk" "$term" --json \
+              > "$out/classes-search-$term.json" 2> "$out/classes-search-$term.stderr"
+            printf '%s\n' "$?" > "$out/classes-search-$term.exit-code.txt"
+          done
+          set -e
+
+      - name: Collect archive inventory and fishing-related leads
+        if: ${{ always() && steps.download.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/albion-apk/Albion-Online.apk" "$RUNNER_TEMP/rea-reports" <<'PY'
+          import json, pathlib, re, sys, zipfile, hashlib
+          apk, report = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+          rows, candidates = [], []
+          keywords = re.compile(r"fish|fishing|rod|bait|catch|gather|inventory|item|market|silver|loot|resource", re.I)
+          with zipfile.ZipFile(apk) as z:
+              infos = z.infolist()
+              if len(infos) > 250000:
+                  raise SystemExit("APK rejected: too many archive entries")
+              total = sum(max(0, i.file_size) for i in infos)
+              if total > 12 * 1024 * 1024 * 1024:
+                  raise SystemExit("APK rejected: expanded archive exceeds 12 GiB safety limit")
+              for i in infos:
+                  row = {"path": i.filename, "size": i.file_size, "compressed_size": i.compress_size}
+                  rows.append(row)
+                  if keywords.search(i.filename):
+                      candidates.append(row)
+          (report / "apk-files.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
+          (report / "apk-files.txt").write_text("\\n".join(r["path"] for r in rows) + "\n", encoding="utf-8")
+          (report / "keyword-path-candidates.json").write_text(json.dumps(candidates, indent=2), encoding="utf-8")
+          (report / "apk-framework-hints.txt").write_text("\\n".join(
+              f"{r['path']} ({r['size']} bytes)" for r in rows
+              if any(x in r["path"].lower() for x in ("libunity.so", "libil2cpp.so", "global-metadata.dat",
+                  "libflutter.so", "libhermes.so", "classes.dex", "assets/bin/data"))
+          ) + "\\n", encoding="utf-8")
+          PY
+
+      - name: Upload reports (not the original APK)
+        if: ${{ always() && steps.dirs.outputs.reports != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rea-albion-android-analysis
+          path: ${{ steps.dirs.outputs.reports }}/
+          if-no-files-found: warn
+          retention-days: 7

@@ -124,3 +124,11 @@ iloader install-sidestore
 4. O crea un tag: `git tag v0.1.0 && git push --tags` para generar un Release automático
 
 El binario resultante es **completamente estático** (musl), no requiere ninguna librería del sistema.
+
+---
+
+## Análisis de Albion Online APK con REA
+
+Se añadió un workflow manual para descargar el APK de Android de Albion Online, analizar su manifiesto y clases con REA/JADX y generar informes descargables. Está disponible en **Actions → REA Albion Android APK Analysis**; la URL oficial está preconfigurada y no requiere un secreto.
+
+Guía: [`docs/REA-ALBION-APK-ANALYSIS.md`](docs/REA-ALBION-APK-ANALYSIS.md). Es un análisis estático inicial, no ejecuta el juego y no garantiza recuperar lógica del servidor, código nativo u ofuscado.
