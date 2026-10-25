@@ -104,6 +104,51 @@ jobs:
           set -e
           exit "$status"
 
+      - name: Inspect Unity IL2CPP metadata
+        id: il2cpp
+        if: ${{ always() && steps.download.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/albion-apk/Albion-Online.apk" "$RUNNER_TEMP/rea-android/global-metadata.dat" <<'PY'
+          import pathlib, sys, zipfile
+          apk, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+          wanted = "assets/bin/Data/Managed/Metadata/global-metadata.dat"
+          with zipfile.ZipFile(apk) as z:
+              matches = [i for i in z.infolist() if i.filename == wanted]
+              if len(matches) != 1:
+                  raise SystemExit(f"Expected exactly one {wanted}; found {len(matches)}")
+              info = matches[0]
+              if info.file_size > 512 * 1024 * 1024:
+                  raise SystemExit("IL2CPP metadata exceeds 512 MiB safety limit")
+              with z.open(info) as src, out.open("wb") as dst:
+                  while True:
+                      block = src.read(1024 * 1024)
+                      if not block:
+                          break
+                      dst.write(block)
+          if out.stat().st_size == 0:
+              raise SystemExit("Extracted IL2CPP metadata is empty")
+          PY
+          set +e
+          rea inspect-il2cpp-metadata "$RUNNER_TEMP/rea-android/global-metadata.dat" --json --full-output \
+            > "$RUNNER_TEMP/rea-reports/rea-il2cpp-metadata.json" \
+            2> "$RUNNER_TEMP/rea-reports/rea-il2cpp-metadata.stderr"
+          status=$?
+          printf '%s\n' "$status" > "$RUNNER_TEMP/rea-reports/rea-il2cpp-metadata.exit-code.txt"
+          set -e
+          if [[ -s "$RUNNER_TEMP/rea-reports/rea-il2cpp-metadata.json" ]]; then
+            python3 - "$RUNNER_TEMP/rea-reports/rea-il2cpp-metadata.json" "$RUNNER_TEMP/rea-reports/il2cpp-keyword-hits.txt" <<'PY'
+          import pathlib, re, sys
+          src, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+          text = src.read_text(encoding="utf-8", errors="replace")
+          pattern = re.compile(r".{0,120}(?:fish(?:ing)?|rod|bait|catch|gather|inventory|market|silver|loot|resource).{0,180}", re.I)
+          hits = list(dict.fromkeys(m.group(0) for m in pattern.finditer(text)))
+          out.write_text("\\n".join(hits[:1000]) + ("\\n" if hits else ""), encoding="utf-8")
+          PY
+          fi
+          exit "$status"
+
       - name: Search Android classes for gameplay-related names
         if: ${{ always() && steps.download.outcome == 'success' }}
         shell: bash
