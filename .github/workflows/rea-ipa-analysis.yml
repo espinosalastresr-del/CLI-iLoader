@@ -1,0 +1,189 @@
+name: REA IPA Analysis
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze-ipa:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      REA_VERSION: "6.7.0"
+    steps:
+      - name: Prepare isolated report directory
+        id: reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          directory="$(mktemp -d "${RUNNER_TEMP:?}/rea-ipa.XXXXXX")"
+          printf 'directory=%s\n' "$directory" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.22.1"
+
+      - name: Install pinned REA CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "${RUNNER_TEMP}/rea-tool" --no-audit --no-fund --ignore-scripts --save-exact "rea-agents@${REA_VERSION}"
+          echo "${RUNNER_TEMP}/rea-tool/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Download authorized IPA
+        id: download
+        shell: bash
+        env:
+          IPA_URL: ${{ secrets.IPA_URL }}
+          REPORT_DIR: ${{ steps.reports.outputs.directory }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${IPA_URL:-}" ]]; then
+            echo "Missing repository secret IPA_URL. Add it in Settings > Secrets and variables > Actions." | tee "$REPORT_DIR/download-error.txt"
+            exit 2
+          fi
+          if [[ "$IPA_URL" != https://* ]]; then
+            echo "IPA_URL must use HTTPS." | tee "$REPORT_DIR/download-error.txt"
+            exit 2
+          fi
+          mkdir -p "$RUNNER_TEMP/rea-ipa-input"
+          curl --fail --location --silent --show-error \
+            --retry 4 --retry-all-errors --connect-timeout 30 --max-time 900 \
+            "$IPA_URL" --output "$RUNNER_TEMP/rea-ipa-input/target.ipa"
+          test -s "$RUNNER_TEMP/rea-ipa-input/target.ipa"
+          sha256sum "$RUNNER_TEMP/rea-ipa-input/target.ipa" | tee "$REPORT_DIR/ipa-sha256.txt"
+          stat --printf='bytes=%s\n' "$RUNNER_TEMP/rea-ipa-input/target.ipa" | tee "$REPORT_DIR/ipa-size.txt"
+          unzip -t "$RUNNER_TEMP/rea-ipa-input/target.ipa" > "$REPORT_DIR/ipa-integrity.txt"
+
+      - name: Inspect IPA with REA
+        id: inspect
+        if: ${{ always() && steps.download.outcome == 'success' }}
+        shell: bash
+        env:
+          REPORT_DIR: ${{ steps.reports.outputs.directory }}
+        run: |
+          set +e
+          rea inspect-artifact "$RUNNER_TEMP/rea-ipa-input/target.ipa" --json --full-output \
+            > "$REPORT_DIR/rea-ipa-inspection.json" 2> "$REPORT_DIR/rea-ipa-inspection.stderr"
+          status=$?
+          printf '%s\n' "$status" > "$REPORT_DIR/rea-ipa-inspection.exit-code.txt"
+          set -e
+          exit "$status"
+
+      - name: Safely extract IPA and inventory Unity components
+        id: extract
+        if: ${{ always() && steps.download.outcome == 'success' }}
+        shell: bash
+        env:
+          REPORT_DIR: ${{ steps.reports.outputs.directory }}
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/rea-ipa-input/target.ipa" "$RUNNER_TEMP/rea-ipa-extracted" "$REPORT_DIR" <<'PY'
+          import hashlib, json, pathlib, sys, zipfile
+          archive = pathlib.Path(sys.argv[1])
+          root = pathlib.Path(sys.argv[2]).resolve()
+          report = pathlib.Path(sys.argv[3])
+          root.mkdir(parents=True, exist_ok=True)
+          rows = []
+          total = 0
+          max_files = 200000
+          max_total = 5 * 1024 * 1024 * 1024
+          with zipfile.ZipFile(archive) as z:
+              infos = z.infolist()
+              if len(infos) > max_files:
+                  raise SystemExit(f"IPA rejected: {len(infos)} entries exceeds {max_files}")
+              for info in infos:
+                  name = info.filename
+                  target = (root / name).resolve()
+                  if target != root and root not in target.parents:
+                      raise SystemExit(f"Unsafe archive path rejected: {name!r}")
+                  if info.file_size < 0:
+                      raise SystemExit(f"Invalid file size: {name!r}")
+                  total += info.file_size
+                  if total > max_total:
+                      raise SystemExit("IPA rejected: expanded size exceeds 5 GiB safety limit")
+                  rows.append({
+                      "path": name, "size": info.file_size,
+                      "compressed_size": info.compress_size,
+                      "encrypted": bool(info.flag_bits & 1),
+                      "sha256": None
+                  })
+              for info in infos:
+                  if info.is_dir():
+                      continue
+                  target = (root / info.filename).resolve()
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  h = hashlib.sha256()
+                  with z.open(info, "r") as src, open(target, "wb") as dst:
+                      while True:
+                          block = src.read(1024 * 1024)
+                          if not block: break
+                          h.update(block); dst.write(block)
+                  for row in rows:
+                      if row["path"] == info.filename:
+                          row["sha256"] = h.hexdigest()
+                          break
+          (report / "ipa-files.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
+          (report / "ipa-files.txt").write_text("\n".join(x["path"] for x in rows) + "\n", encoding="utf-8")
+          unity = [x for x in rows if any(s in x["path"].lower() for s in
+                   ("global-metadata.dat", "unityframework.framework", "il2cpp", "data/managed/",
+                    "unityplayer", ".metallib"))]
+          (report / "unity-candidates.json").write_text(json.dumps(unity, indent=2), encoding="utf-8")
+          PY
+
+      - name: Analyze IL2CPP metadata when present
+        if: ${{ always() && steps.extract.outcome == 'success' }}
+        shell: bash
+        env:
+          REPORT_DIR: ${{ steps.reports.outputs.directory }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$REPORT_DIR/il2cpp"
+          mapfile -d '' metadata_files < <(find "$RUNNER_TEMP/rea-ipa-extracted" -type f -name global-metadata.dat -print0)
+          if (( ${#metadata_files[@]} == 0 )); then
+            printf '%s\n' "No global-metadata.dat found; app may use Mono, another layout, encryption, or a non-Unity engine." > "$REPORT_DIR/il2cpp/NOT-FOUND.txt"
+            exit 0
+          fi
+          index=0
+          for metadata in "${metadata_files[@]}"; do
+            index=$((index+1))
+            name="metadata-${index}"
+            set +e
+            rea inspect-il2cpp-metadata "$metadata" --json --full-output \
+              > "$REPORT_DIR/il2cpp/${name}.json" 2> "$REPORT_DIR/il2cpp/${name}.stderr"
+            status=$?
+            set -e
+            printf '%s\n' "$status" > "$REPORT_DIR/il2cpp/${name}.exit-code.txt"
+          done
+
+      - name: Summarize frameworks, binaries and plist paths
+        if: ${{ always() && steps.extract.outcome == 'success' }}
+        shell: bash
+        env:
+          REPORT_DIR: ${{ steps.reports.outputs.directory }}
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/rea-ipa-extracted"
+          find "$ROOT/Payload" -type d \( -name '*.framework' -o -name '*.appex' -o -name '*.bundle' \) -print 2>/dev/null \
+            | sed "s#^$ROOT/##" > "$REPORT_DIR/frameworks-extensions.txt" || true
+          find "$ROOT/Payload" -type f -name Info.plist -print 2>/dev/null \
+            | sed "s#^$ROOT/##" > "$REPORT_DIR/info-plist-paths.txt" || true
+          find "$ROOT/Payload" -type f -print0 2>/dev/null \
+            | xargs -0 -r file > "$REPORT_DIR/file-types.txt" || true
+          grep -Ei 'Mach-O|dynamically linked shared library' "$REPORT_DIR/file-types.txt" \
+            > "$REPORT_DIR/native-binaries.txt" || true
+
+      - name: Upload reports even when analysis fails
+        if: ${{ always() && steps.reports.outputs.directory != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rea-ipa-analysis
+          path: ${{ steps.reports.outputs.directory }}/
+          if-no-files-found: warn
+          retention-days: 7
