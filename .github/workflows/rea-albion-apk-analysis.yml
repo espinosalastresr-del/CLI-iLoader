@@ -143,20 +143,20 @@ jobs:
           if len(data) < 8:
               raise SystemExit("IL2CPP metadata is empty or too small")
           (report / "il2cpp-metadata-header.txt").write_text(
-              f"file={wanted}\\nbytes={len(data)}\\nmagic_le=0x{int.from_bytes(data[:4], 'little'):08x}\\nversion_le={int.from_bytes(data[4:8], 'little')}\\n",
+              f"file={wanted}\nbytes={len(data)}\nmagic_le=0x{int.from_bytes(data[:4], 'little'):08x}\nversion_le={int.from_bytes(data[4:8], 'little')}\n",
               encoding="utf-8")
           # Static triage only: harvest printable ASCII and UTF-16LE strings.
           # This is not a full IL2CPP metadata parser and does not recover method bodies.
           strings = []
-          for m in re.finditer(rb"[\\x20-\\x7e]{4,}", data):
+          for m in re.finditer(rb"[\x20-\x7e]{4,}", data):
               strings.append(m.group().decode("ascii", "replace"))
-          for m in re.finditer(rb"(?:[\\x20-\\x7e]\\x00){4,}", data):
+          for m in re.finditer(rb"(?:[\x20-\x7e]\x00){4,}", data):
               strings.append(m.group().decode("utf-16le", "replace"))
           strings = list(dict.fromkeys(strings))
-          (report / "il2cpp-metadata-strings.txt").write_text("\\n".join(strings) + ("\\n" if strings else ""), encoding="utf-8")
+          (report / "il2cpp-metadata-strings.txt").write_text("\n".join(strings) + ("\n" if strings else ""), encoding="utf-8")
           pattern = re.compile(r"fish(?:ing)?|rod|bait|catch|gather|inventory|market|silver|loot|resource|network|socket|http|login|account|guild|craft|trade|auction|item", re.I)
           hits = [s for s in strings if pattern.search(s)]
-          (report / "il2cpp-keyword-hits.txt").write_text("\\n".join(hits[:5000]) + ("\\n" if hits else ""), encoding="utf-8")
+          (report / "il2cpp-keyword-hits.txt").write_text("\n".join(hits[:5000]) + ("\n" if hits else ""), encoding="utf-8")
           print(f"Extracted {len(strings)} unique printable strings; {len(hits)} keyword candidates.")
           PY
 
