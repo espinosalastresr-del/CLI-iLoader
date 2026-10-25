@@ -75,14 +75,14 @@ jobs:
               if "AndroidManifest.xml" not in names:
                   raise SystemExit("Archive has no root AndroidManifest.xml; not a standalone APK")
               with open(out, "w", encoding="utf-8") as f:
-                  f.write(f"ZIP CRC checks passed; {len(names)} entries; AndroidManifest.xml present.\\n")
+                  f.write(f"ZIP CRC checks passed; {len(names)} entries; AndroidManifest.xml present.\n")
           PY
 
       - name: Install pinned REA CLI and JADX engine
         shell: bash
         run: |
           set -euo pipefail
-          npm install --prefix "$RUNNER_TEMP/rea-tool" --no-audit --no-fund --ignore-scripts --save-exact "rea-agents@${REA_VERSION}"
+          npm install --prefix "$RUNNER_TEMP/rea-tool" --no-audit --no-fund --save-exact "rea-agents@${REA_VERSION}"
           echo "$RUNNER_TEMP/rea-tool/node_modules/.bin" >> "$GITHUB_PATH"
           curl --fail --location --silent --show-error --retry 3 \
             "https://github.com/1013503897/jadx-headless-mcp/releases/download/v0.7.1/jadx-headless-mcp-0.7.1-all.jar" \
@@ -127,7 +127,7 @@ jobs:
                   if keywords.search(i.filename):
                       candidates.append(row)
           (report / "apk-files.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
-          (report / "apk-files.txt").write_text("\\n".join(r["path"] for r in rows) + "\\n", encoding="utf-8")
+          (report / "apk-files.txt").write_text("\\n".join(r["path"] for r in rows) + "\n", encoding="utf-8")
           (report / "keyword-path-candidates.json").write_text(json.dumps(candidates, indent=2), encoding="utf-8")
           (report / "apk-framework-hints.txt").write_text("\\n".join(
               f"{r['path']} ({r['size']} bytes)" for r in rows
