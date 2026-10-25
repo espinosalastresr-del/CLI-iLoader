@@ -127,8 +127,8 @@ El binario resultante es **completamente estático** (musl), no requiere ninguna
 
 ---
 
-## Análisis estático de IPA con REA
+## Análisis de Albion Online APK con REA
 
-Se añadió un workflow aislado para descargar un IPA autorizado, generar evidencia con REA e inventariar dependencias y metadatos de Unity/IL2CPP. Está disponible en **Actions → REA IPA Analysis** después de configurar el secreto `IPA_URL`.
+Se añadió un workflow manual para descargar el APK de Android de Albion Online, analizar su manifiesto y clases con REA/JADX y generar informes descargables. Está disponible en **Actions → REA Albion Android APK Analysis**; la URL oficial está preconfigurada y no requiere un secreto.
 
-Guía: [`docs/REA-IPA-ANALYSIS.md`](docs/REA-IPA-ANALYSIS.md). El workflow solo analiza estáticamente el paquete; no ejecuta la app ni garantiza recuperar código cifrado u ofuscado.
+Guía: [`docs/REA-ALBION-APK-ANALYSIS.md`](docs/REA-ALBION-APK-ANALYSIS.md). Es un análisis estático inicial, no ejecuta el juego y no garantiza recuperar lógica del servidor, código nativo u ofuscado.
