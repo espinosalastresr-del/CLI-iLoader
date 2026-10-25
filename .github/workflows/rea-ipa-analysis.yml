@@ -59,7 +59,16 @@ jobs:
           test -s "$RUNNER_TEMP/rea-ipa-input/target.ipa"
           sha256sum "$RUNNER_TEMP/rea-ipa-input/target.ipa" | tee "$REPORT_DIR/ipa-sha256.txt"
           stat --printf='bytes=%s\n' "$RUNNER_TEMP/rea-ipa-input/target.ipa" | tee "$REPORT_DIR/ipa-size.txt"
-          unzip -t "$RUNNER_TEMP/rea-ipa-input/target.ipa" > "$REPORT_DIR/ipa-integrity.txt"
+          python3 - "$RUNNER_TEMP/rea-ipa-input/target.ipa" "$REPORT_DIR/ipa-integrity.txt" <<'PY'
+          import sys, zipfile
+          path, output = sys.argv[1:]
+          with zipfile.ZipFile(path) as archive:
+              bad = archive.testzip()
+          with open(output, "w", encoding="utf-8") as f:
+              f.write("CRC check passed\\n" if bad is None else f"CRC check failed: {bad}\\n")
+          if bad is not None:
+              raise SystemExit(1)
+          PY
 
       - name: Inspect IPA with REA
         id: inspect
@@ -114,7 +123,7 @@ jobs:
                       "encrypted": bool(info.flag_bits & 1),
                       "sha256": None
                   })
-              for info in infos:
+              for index, info in enumerate(infos):
                   if info.is_dir():
                       continue
                   target = (root / info.filename).resolve()
@@ -125,10 +134,7 @@ jobs:
                           block = src.read(1024 * 1024)
                           if not block: break
                           h.update(block); dst.write(block)
-                  for row in rows:
-                      if row["path"] == info.filename:
-                          row["sha256"] = h.hexdigest()
-                          break
+                  rows[index]["sha256"] = h.hexdigest()
           (report / "ipa-files.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
           (report / "ipa-files.txt").write_text("\n".join(x["path"] for x in rows) + "\n", encoding="utf-8")
           unity = [x for x in rows if any(s in x["path"].lower() for s in
